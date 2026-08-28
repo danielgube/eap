@@ -625,7 +625,7 @@ class EapReleaseUpdater:
     @staticmethod
     def _validate_managed_path(path: PurePosixPath) -> None:
         text = path.as_posix()
-        if text in {"README.md", "eap.cmd"}:
+        if text in {"README.md", "config.properties.example", "eap.cmd"}:
             return
         if path.parts[0] != "core" or len(path.parts) < 2:
             raise IntegrityError(f"Ruta administrada no permitida: {text}")

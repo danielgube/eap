@@ -11,6 +11,7 @@ class EapPaths:
     root: Path
     core: Path
     components: Path
+    pocketools: Path
     data: Path
     envs: Path
     temp: Path
@@ -31,6 +32,7 @@ class EapPaths:
             root=resolved,
             core=resolved / "core",
             components=resolved / "components",
+            pocketools=resolved / "pocketools",
             data=resolved / "data",
             envs=resolved / "envs",
             temp=resolved / "temp",
@@ -43,13 +45,21 @@ class EapPaths:
     def ensure_layout(self) -> None:
         for directory in (
             self.components,
+            self.pocketools,
+            self.pocketools / "bin",
+            self.pocketools / "packages",
             self.data,
+            self.data / "pocketools",
+            self.data / "pocketools" / "catalogs",
+            self.data / "pocketools" / "state",
             self.envs,
             self.temp,
             self.exports,
             self.workspaces,
             self.temp / "downloads",
+            self.temp / "downloads" / "pocketools",
             self.temp / "staging",
+            self.temp / "staging" / "pocketools",
             self.temp / "transactions",
             self.temp / "locks",
             self.temp / "logs",

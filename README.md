@@ -52,6 +52,8 @@ internos y como alias compatible de CLI.
 - desactivación independiente de componentes y desinstalación de payloads sin uso;
 - activación local de payloads disponibles sin resolver ni descargar de nuevo;
 - tamaño de temporales visible y limpieza desde la interfaz o la CLI;
+- Pocketools globales desde repositorios GitHub, con versiones, ayuda, dependencias y
+  comandos disponibles en todos los shells EAP;
 - actualización pública y transaccional de EAP desde releases de GitHub;
 - perfil de usuario portable bajo data y CLI automatizable.
 - contrato `data` declarativo con directorios opcionales y archivos `if-missing`.
@@ -117,6 +119,10 @@ Comandos útiles:
     eap.cmd component list
     eap.cmd component check-updates --profile desarrollo
     eap.cmd component update java --profile desarrollo
+    eap.cmd pocketool list --available --refresh
+    eap.cmd pocketool install sessionkeep
+    eap.cmd pocketool help sessionkeep
+    eap.cmd pocketool repository list
     eap.cmd terminal start --profile desarrollo
     eap.cmd shell --profile desarrollo --type cmd
     eap.cmd launch --profile desarrollo
@@ -499,6 +505,46 @@ activo; `codium` hace lo mismo para VSCodium. Un acceso directo creado desde la
 interfaz sigue apuntando al launcher estable de EAP, de modo que no pierde el
 workspace ni la activación portable del profile.
 
+## Pocketools
+
+Las Pocketools son utilidades globales pequeñas que no pertenecen a un profile
+ni al core de EAP. Se publican en repositorios independientes, se instalan bajo
+`pocketools/packages` y EAP genera sus comandos en `pocketools/bin`. Ese único
+directorio se añade al `PATH` después de las rutas de los componentes activos y
+antes de las herramientas core.
+
+El repositorio público predeterminado es
+`https://github.com/danielgube/eap-pocketools`. Se pueden añadir repositorios
+GitHub públicos de otras organizaciones:
+
+    eap.cmd pocketool repository add empresa https://github.com/empresa/eap-pocketools
+    eap.cmd pocketool refresh
+    eap.cmd pocketool search zip
+    eap.cmd pocketool install empresa/zipme
+    eap.cmd pocketool update empresa/zipme
+    eap.cmd pocketool uninstall empresa/zipme
+
+EAP consulta el árbol `main`, descubre automáticamente los manifiestos bajo
+`pocketools/*/pocketool.json` y fija cada instalación al commit consultado. Los
+archivos se descargan directamente desde ese commit y se contrastan con su
+tamaño e identificador de objeto Git. No hacen falta catálogos generados,
+GitHub Releases, tags ni ZIPs.
+
+Cada instalación rechaza rutas inseguras y colisiones de comandos, y publica el
+lock y los shims de forma transaccional.
+Las dependencias entre Pocketools se resuelven como grafo y los ciclos se
+rechazan. Las dependencias de componentes se evalúan contra el profile activo al
+instalar y cada vez que se lanza el comando.
+
+La primera Pocketool es `sessionkeep`, con los comandos `start`, `stop`,
+`status` y `--help`. Mantiene una única instancia oculta y conserva su estado en
+`data/pocketools/state`, fuera del payload versionado.
+
+Para publicar una actualización basta con cambiar el fuente, incrementar la
+versión de `pocketool.json`, probar y hacer push a `main`. Las exportaciones de
+EAP y de profiles no incluyen Pocketools ni sus datos; se restauran desde sus
+repositorios públicos.
+
 ## Estructura
 
 - core/tools: payloads ejecutables administrados por el bootstrap;
@@ -523,6 +569,9 @@ workspace ni la activación portable del profile.
 - components/dbeaver/community/<version>: instalaciones DBeaver compartidas;
 - components/vscode/microsoft/<version>: instalaciones VS Code compartidas;
 - components/vscodium/community/<version>: instalaciones VSCodium compartidas;
+- pocketools/bin: shims globales generados por EAP;
+- pocketools/packages/<repositorio>/<id>/<version>: payloads Pocketool;
+- data/pocketools: lock, índices Git guardados y estado mutable de Pocketools;
 - envs/<nombre>: definición persistida del profile, lock, estado y
   `config.properties` privado; `envs` conserva su nombre físico por compatibilidad;
 - data/profiles/<nombre>: conjuntos de datos compartibles entre profiles,
@@ -540,6 +589,8 @@ shells y launchers. Por ejemplo:
 
     # config.properties general
     env.COMPANY_API_URL=https://api.example
+    pocketools.repository.danielgube=https://github.com/danielgube/eap-pocketools
+    pocketools.repository.empresa=https://github.com/empresa/eap-pocketools
 
     # envs/hbx/config.properties
     env.COMPANY_API_TOKEN=valor-privado

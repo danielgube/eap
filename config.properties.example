@@ -1,0 +1,16 @@
+# Profile que EAP selecciona si todavía no existe una selección persistida.
+profile.default=default
+
+# Red y comprobación de actualizaciones.
+network.timeoutSeconds=20
+update.checkOnStartup=true
+update.checkIntervalHours=24
+download.keepArchives=true
+
+# Repositorios Pocketools públicos de GitHub. EAP descubre los manifiestos
+# pocketools/*/pocketool.json directamente desde la rama main.
+pocketools.repository.danielgube=https://github.com/danielgube/eap-pocketools
+# pocketools.repository.empresa=https://github.com/empresa/eap-pocketools
+
+# Variables generales que recibirán los procesos de todos los profiles.
+# env.COMPANY_API_URL=https://api.example

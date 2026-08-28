@@ -1,6 +1,7 @@
 # Estado mutable y privado de EAP
 /config.properties
 /components/
+/pocketools/
 /data/
 /envs/
 /exports/

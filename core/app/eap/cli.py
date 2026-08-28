@@ -153,6 +153,80 @@ def build_parser() -> argparse.ArgumentParser:
     _add_profile_argument(uninstall_parser)
     uninstall_parser.add_argument("--yes", action="store_true")
 
+    pocketool_parser = subparsers.add_parser(
+        "pocketool", help="gestionar utilidades Pocketools globales"
+    )
+    pocketool_subparsers = pocketool_parser.add_subparsers(
+        dest="pocketool_command", required=True
+    )
+    pocketool_list = pocketool_subparsers.add_parser(
+        "list", help="listar Pocketools instaladas o disponibles"
+    )
+    pocketool_list.add_argument("--available", action="store_true")
+    pocketool_list.add_argument("--refresh", action="store_true")
+    pocketool_list.add_argument("--json", action="store_true")
+    pocketool_search = pocketool_subparsers.add_parser(
+        "search", help="buscar Pocketools disponibles"
+    )
+    pocketool_search.add_argument("query", nargs="?", default="")
+    pocketool_search.add_argument("--refresh", action="store_true")
+    pocketool_search.add_argument("--json", action="store_true")
+    pocketool_install = pocketool_subparsers.add_parser(
+        "install", help="instalar una Pocketool y sus dependencias"
+    )
+    pocketool_install.add_argument("pocketool")
+    _add_profile_argument(pocketool_install)
+    pocketool_install.add_argument("--offline", action="store_true")
+    pocketool_install.add_argument("--yes", action="store_true")
+    pocketool_update = pocketool_subparsers.add_parser(
+        "update", help="actualizar una Pocketool instalada"
+    )
+    pocketool_update.add_argument("pocketool")
+    _add_profile_argument(pocketool_update)
+    pocketool_update.add_argument("--yes", action="store_true")
+    pocketool_uninstall = pocketool_subparsers.add_parser(
+        "uninstall", help="desinstalar una Pocketool"
+    )
+    pocketool_uninstall.add_argument("pocketool")
+    pocketool_uninstall.add_argument("--yes", action="store_true")
+    pocketool_help = pocketool_subparsers.add_parser(
+        "help", help="mostrar la ayuda propia de una Pocketool"
+    )
+    pocketool_help.add_argument("pocketool")
+    pocketool_help.add_argument("--json", action="store_true")
+    pocketool_refresh = pocketool_subparsers.add_parser(
+        "refresh", help="actualizar los índices Pocketools desde GitHub"
+    )
+    pocketool_refresh.add_argument("repository", nargs="?")
+    pocketool_refresh.add_argument("--json", action="store_true")
+    pocketool_run = pocketool_subparsers.add_parser(
+        "run", help="ejecutor interno utilizado por los shims"
+    )
+    pocketool_run.add_argument("pocketool")
+    pocketool_run.add_argument("pocketool_entrypoint")
+    pocketool_run.add_argument("pocketool_arguments", nargs=argparse.REMAINDER)
+    pocketool_repository = pocketool_subparsers.add_parser(
+        "repository", help="gestionar repositorios Pocketools"
+    )
+    repository_subparsers = pocketool_repository.add_subparsers(
+        dest="repository_command", required=True
+    )
+    repository_list = repository_subparsers.add_parser(
+        "list", help="listar repositorios configurados"
+    )
+    repository_list.add_argument("--json", action="store_true")
+    repository_add = repository_subparsers.add_parser(
+        "add", help="añadir un repositorio HTTPS"
+    )
+    repository_add.add_argument("id")
+    repository_add.add_argument("url")
+    repository_add.add_argument("--yes", action="store_true")
+    repository_remove = repository_subparsers.add_parser(
+        "remove", help="quitar un repositorio"
+    )
+    repository_remove.add_argument("id")
+    repository_remove.add_argument("--yes", action="store_true")
+
     shell_parser = subparsers.add_parser("shell", help="abrir shell activado")
     _add_profile_argument(shell_parser)
     shell_parser.add_argument(
@@ -651,6 +725,244 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 )
         return 0
 
+    if arguments.command == "pocketool":
+        if arguments.pocketool_command == "list":
+            if arguments.available:
+                values = [
+                    item.as_json()
+                    for item in app.available_pocketools(
+                        refresh=arguments.refresh
+                    )
+                ]
+                if arguments.json:
+                    _print_json(values)
+                elif not values:
+                    print("No hay Pocketools disponibles.")
+                else:
+                    installed = {
+                        (
+                            str(item["repository"]).casefold(),
+                            str(item["id"]).casefold(),
+                        ): item
+                        for item in app.pocketools.installed()
+                    }
+                    for item in values:
+                        current = installed.get(
+                            (
+                                str(item["repository"]).casefold(),
+                                str(item["id"]).casefold(),
+                            )
+                        )
+                        suffix = (
+                            f" · instalada {current['version']}"
+                            if current is not None
+                            else ""
+                        )
+                        print(
+                            f"{item['repository']}/{item['id']} · "
+                            f"{item['name']} · {item['version']}{suffix}"
+                        )
+                return 0
+            values = app.pocketools.installed()
+            if arguments.json:
+                _print_json(values)
+            elif not values:
+                print("No hay Pocketools instaladas.")
+            else:
+                for item in values:
+                    commands = ", ".join(
+                        str(command["name"])
+                        for command in item["manifest"]["commands"]
+                    )
+                    print(
+                        f"{item['repository']}/{item['id']} · "
+                        f"{item['name']} · {item['version']} · {commands}"
+                    )
+            return 0
+
+        if arguments.pocketool_command == "search":
+            query = arguments.query.casefold()
+            values = [
+                item
+                for item in app.available_pocketools(
+                    refresh=arguments.refresh
+                )
+                if query
+                in " ".join(
+                    (
+                        item.source.id,
+                        item.id,
+                        item.name,
+                        str(item.value["description"]),
+                        *(
+                            str(command["name"])
+                            for command in item.commands
+                        ),
+                    )
+                ).casefold()
+            ]
+            if arguments.json:
+                _print_json([item.as_json() for item in values])
+            elif not values:
+                print("No se encontraron Pocketools.")
+            else:
+                for item in values:
+                    print(
+                        f"{item.selector} · {item.name} · {item.version}\n"
+                        f"  {item.value['description']}"
+                    )
+            return 0
+
+        if arguments.pocketool_command == "install":
+            environment_id = _require_environment(
+                app, arguments.environment
+            )
+            if not arguments.yes and not _confirm(
+                f"¿Instalar {arguments.pocketool} desde sus repositorios "
+                "configurados?"
+            ):
+                print("Cancelado.")
+                return 0
+            results = app.install_pocketool(
+                arguments.pocketool,
+                environment_id,
+                refresh=not arguments.offline,
+            )
+            for result in results:
+                action = "Instalada" if result.changed else "Ya instalada"
+                print(
+                    f"{action}: {result.selector} {result.version} · "
+                    f"{result.install_path}"
+                )
+            print(
+                "Abra una nueva shell EAP para disponer de sus comandos "
+                "en PATH."
+            )
+            return 0
+
+        if arguments.pocketool_command == "update":
+            environment_id = _require_environment(
+                app, arguments.environment
+            )
+            current = app.pocketools.find_installed(arguments.pocketool)
+            print(
+                f"{current['repository']}/{current['id']} · "
+                f"versión instalada {current['version']}"
+            )
+            if not arguments.yes and not _confirm("¿Buscar e instalar actualización?"):
+                print("Cancelado.")
+                return 0
+            results = app.update_pocketool(
+                arguments.pocketool, environment_id
+            )
+            changed = [item for item in results if item.changed]
+            if not changed:
+                print("Ya está instalada la última versión disponible.")
+            for result in changed:
+                print(f"Actualizada: {result.selector} {result.version}")
+            return 0
+
+        if arguments.pocketool_command == "uninstall":
+            current = app.pocketools.find_installed(arguments.pocketool)
+            selector = f"{current['repository']}/{current['id']}"
+            print(f"Se desinstalará {selector} {current['version']}.")
+            print("Sus datos persistentes se conservarán.")
+            if not arguments.yes and not _confirm("¿Desinstalar Pocketool?"):
+                print("Cancelado.")
+                return 0
+            result = app.uninstall_pocketool(arguments.pocketool)
+            print(f"Pocketool desinstalada: {result['pocketool']}")
+            if not result["payloadRemoved"]:
+                print(
+                    "AVISO: no se pudo eliminar el payload residual: "
+                    f"{result['residualPath']}"
+                )
+            return 0
+
+        if arguments.pocketool_command == "help":
+            value = app.pocketool_help(arguments.pocketool)
+            if arguments.json:
+                _print_json(value)
+            else:
+                help_value = value["help"]
+                print(
+                    f"{value['name']} {value['version']} "
+                    f"({value['repository']}/{value['id']})"
+                )
+                print(help_value["summary"])
+                print(f"Uso: {help_value['usage']}")
+                for detail in help_value.get("details", []):
+                    print(f"  {detail}")
+                print(
+                    "Comandos: "
+                    + ", ".join(
+                        str(item["name"]) for item in value["commands"]
+                    )
+                )
+            return 0
+
+        if arguments.pocketool_command == "refresh":
+            values = app.refresh_pocketools(arguments.repository)
+            if arguments.json:
+                _print_json([item.as_json() for item in values])
+            else:
+                repositories = sorted(
+                    {item.source.id for item in values}, key=str.casefold
+                )
+                print(
+                    f"Índice actualizado: {len(values)} Pocketool(s) · "
+                    + ", ".join(repositories)
+                )
+            return 0
+
+        if arguments.pocketool_command == "run":
+            forwarded = list(arguments.pocketool_arguments)
+            if forwarded[:1] == ["--"]:
+                forwarded.pop(0)
+            return app.run_pocketool(
+                arguments.pocketool,
+                arguments.pocketool_entrypoint,
+                forwarded,
+            )
+
+        if arguments.pocketool_command == "repository":
+            if arguments.repository_command == "list":
+                values = [source.as_json() for source in app.pocketools.sources()]
+                if arguments.json:
+                    _print_json(values)
+                elif not values:
+                    print("No hay repositorios Pocketools configurados.")
+                else:
+                    for source in values:
+                        print(
+                            f"{source['id']} · {source['repositoryUrl']}\n"
+                            f"  índice: {source['catalogUrl']}"
+                        )
+                return 0
+            if arguments.repository_command == "add":
+                print(
+                    "Los manifiestos y archivos publicados por este "
+                    "repositorio podrán instalarse como Pocketools."
+                )
+                print(f"Repositorio: {arguments.url}")
+                if not arguments.yes and not _confirm(
+                    "¿Confiar y añadir este repositorio?"
+                ):
+                    print("Cancelado.")
+                    return 0
+                app.add_pocketool_repository(arguments.id, arguments.url)
+                print(f"Repositorio añadido: {arguments.id}")
+                return 0
+            if arguments.repository_command == "remove":
+                source = app.pocketools.source(arguments.id)
+                print(f"Se quitará la fuente {source.id}: {source.repository_url}")
+                if not arguments.yes and not _confirm("¿Quitar repositorio?"):
+                    print("Cancelado.")
+                    return 0
+                app.remove_pocketool_repository(arguments.id)
+                print(f"Repositorio eliminado: {arguments.id}")
+                return 0
+
     if arguments.command == "component":
         if arguments.component_command == "resolve":
             provider, track = _component_selection(app, arguments)
@@ -921,6 +1233,8 @@ def interactive(
                     if environment_id != previous_environment:
                         _interactive_restore_missing(app, environment_id)
                     update_status = _initial_update_status(app, environment_id)
+                elif option == "3":
+                    _interactive_pocketools(app, environment_id)
                 elif option == "0":
                     previous_environment = environment_id
                     selected_environment = _interactive_advanced_options(
@@ -1094,6 +1408,7 @@ def _render_main_dashboard(
                 [
                     "[1] Catálogo de componentes",
                     "[2] Gestionar profile",
+                    "[3] Pocketools",
                     "[0] Opciones avanzadas",
                     "[Esc] Cerrar interfaz",
                 ],
@@ -2703,6 +3018,293 @@ def _interactive_export_tool(app: EapApplication) -> None:
     )
     print(f"Distribución portable de EAP: {result.archive}")
     print(f"SHA256: {result.sha256}")
+
+
+def _interactive_pocketools(
+    app: EapApplication, environment_id: str
+) -> None:
+    while True:
+        installed = app.pocketools.installed()
+        try:
+            cached = app.available_pocketools(require_cache=True)
+        except EapError:
+            cached = []
+        installed_rows = [
+            f"{item['repository']}/{item['id']} · {item['version']} · "
+            + ", ".join(
+                str(command["name"])
+                for command in item["manifest"]["commands"]
+            )
+            for item in installed
+        ] or ["(sin Pocketools instaladas)"]
+        _print_panel(
+            "Pocketools",
+            [
+                ("Instaladas globalmente", installed_rows),
+                (
+                    "Índices guardados",
+                    [
+                        f"{len(cached)} Pocketool(s) indexada(s) · "
+                        f"{len(app.pocketools.sources())} repositorio(s)"
+                    ],
+                ),
+                (
+                    "Acciones",
+                    [
+                        "[1] Explorar e instalar",
+                        "[2] Buscar actualizaciones",
+                        "[3] Desinstalar",
+                        "[4] Ver ayuda",
+                        "[5] Actualizar índices desde GitHub",
+                        "[6] Gestionar repositorios",
+                        "[Esc] Volver",
+                    ],
+                ),
+            ],
+        )
+        option = _read_input("> ").strip().lower()
+        if _is_escape(option) or option in {"v", "volver", "q"}:
+            return
+        if option == "1":
+            _interactive_install_pocketool(app, environment_id)
+            continue
+        if option == "2":
+            _interactive_update_pocketool(app, environment_id)
+            continue
+        if option == "3":
+            _interactive_uninstall_pocketool(app)
+            continue
+        if option == "4":
+            _interactive_pocketool_help(app)
+            continue
+        if option == "5":
+            values = app.refresh_pocketools()
+            print(f"Índices actualizados: {len(values)} Pocketool(s).")
+            continue
+        if option == "6":
+            _interactive_pocketool_repositories(app)
+            continue
+        print("Opción no válida.")
+
+
+def _interactive_install_pocketool(
+    app: EapApplication, environment_id: str
+) -> None:
+    print("Consultando repositorios Pocketools...")
+    definitions = sorted(
+        app.available_pocketools(refresh=True),
+        key=lambda item: (item.name.casefold(), item.source.id.casefold()),
+    )
+    installed = {
+        (str(item["repository"]).casefold(), str(item["id"]).casefold()): item
+        for item in app.pocketools.installed()
+    }
+    rows = []
+    for index, definition in enumerate(definitions, start=1):
+        current = installed.get(
+            (definition.source.id.casefold(), definition.id.casefold())
+        )
+        suffix = (
+            f" · instalada {current['version']}"
+            if current is not None
+            else ""
+        )
+        rows.append(
+            f"[{index}] {definition.name} · {definition.version} · "
+            f"{definition.selector}{suffix}"
+        )
+    rows.append("[Esc] Volver")
+    _print_panel("Pocketools > Instalar", [("Disponibles", rows)])
+    selected_index = _read_index(len(definitions))
+    if selected_index is None:
+        return
+    definition = definitions[selected_index]
+    _print_panel(
+        f"Instalar {definition.name}",
+        [
+            (
+                "Información",
+                [
+                    str(definition.value["description"]),
+                    f"Origen: {definition.source.repository_url}",
+                    f"Versión: {definition.version}",
+                    "Comandos: "
+                    + ", ".join(
+                        str(command["name"])
+                        for command in definition.commands
+                    ),
+                ],
+            )
+        ],
+    )
+    if not _confirm("¿Descargar e instalar esta Pocketool?"):
+        return
+    results = app.install_pocketool(
+        definition.selector,
+        environment_id,
+        refresh=False,
+    )
+    for result in results:
+        action = "Instalada" if result.changed else "Ya instalada"
+        print(f"{action}: {result.selector} {result.version}")
+
+
+def _interactive_update_pocketool(
+    app: EapApplication, environment_id: str
+) -> None:
+    print("Buscando actualizaciones Pocketools...")
+    updates = app.pocketool_updates()
+    if not updates:
+        print("Todas las Pocketools están actualizadas.")
+        return
+    rows = [
+        f"[{index}] {item['name']} · {item['currentVersion']} -> "
+        f"{item['latestVersion']} · {item['repository']}/{item['id']}"
+        for index, item in enumerate(updates, start=1)
+    ]
+    rows.append("[Esc] Volver")
+    _print_panel("Pocketools > Actualizar", [("Actualizaciones", rows)])
+    selected_index = _read_index(len(updates))
+    if selected_index is None:
+        return
+    selected = updates[selected_index]
+    selector = f"{selected['repository']}/{selected['id']}"
+    if not _confirm(f"¿Actualizar {selector}?"):
+        return
+    results = app.update_pocketool(selector, environment_id)
+    for result in results:
+        if result.changed:
+            print(f"Actualizada: {result.selector} {result.version}")
+
+
+def _interactive_uninstall_pocketool(app: EapApplication) -> None:
+    installed = app.pocketools.installed()
+    if not installed:
+        print("No hay Pocketools instaladas.")
+        return
+    rows = [
+        f"[{index}] {item['name']} · {item['version']} · "
+        f"{item['repository']}/{item['id']}"
+        for index, item in enumerate(installed, start=1)
+    ]
+    rows.append("[Esc] Volver")
+    _print_panel("Pocketools > Desinstalar", [("Instaladas", rows)])
+    selected_index = _read_index(len(installed))
+    if selected_index is None:
+        return
+    selected = installed[selected_index]
+    selector = f"{selected['repository']}/{selected['id']}"
+    if not _confirm(
+        f"¿Desinstalar {selector}? Sus datos persistentes se conservarán."
+    ):
+        return
+    result = app.uninstall_pocketool(selector)
+    print(f"Pocketool desinstalada: {selector}")
+    if not result["payloadRemoved"]:
+        print(f"Payload residual conservado: {result['residualPath']}")
+
+
+def _interactive_pocketool_help(app: EapApplication) -> None:
+    installed = app.pocketools.installed()
+    if not installed:
+        print("No hay Pocketools instaladas.")
+        return
+    rows = [
+        f"[{index}] {item['name']} · {item['repository']}/{item['id']}"
+        for index, item in enumerate(installed, start=1)
+    ]
+    rows.append("[Esc] Volver")
+    _print_panel("Pocketools > Ayuda", [("Instaladas", rows)])
+    selected_index = _read_index(len(installed))
+    if selected_index is None:
+        return
+    selected = installed[selected_index]
+    value = app.pocketool_help(
+        f"{selected['repository']}/{selected['id']}"
+    )
+    help_value = value["help"]
+    _print_panel(
+        f"{value['name']} {value['version']}",
+        [
+            (
+                "Ayuda",
+                [
+                    help_value["summary"],
+                    f"Uso: {help_value['usage']}",
+                    *help_value.get("details", []),
+                ],
+            )
+        ],
+    )
+    _read_input("Pulse Intro o Esc para volver. ")
+
+
+def _interactive_pocketool_repositories(app: EapApplication) -> None:
+    while True:
+        sources = app.pocketools.sources()
+        rows = [
+            f"{source.id} · {source.repository_url}" for source in sources
+        ] or ["(sin repositorios configurados)"]
+        _print_panel(
+            "Pocketools > Repositorios",
+            [
+                ("Fuentes", rows),
+                (
+                    "Acciones",
+                    [
+                        "[1] Añadir repositorio",
+                        "[2] Quitar repositorio",
+                        "[Esc] Volver",
+                    ],
+                ),
+            ],
+        )
+        option = _read_input("> ").strip().lower()
+        if _is_escape(option) or option in {"v", "volver", "q"}:
+            return
+        if option == "1":
+            source_id = _read_input("Id corto del repositorio: ").strip()
+            if _is_escape(source_id) or not source_id:
+                continue
+            url = _read_input("URL HTTPS del repositorio GitHub: ").strip()
+            if _is_escape(url) or not url:
+                continue
+            _print_panel(
+                "Confiar en repositorio Pocketools",
+                [
+                    (
+                        "Alcance",
+                        [
+                            f"Id: {source_id}",
+                            f"URL: {url}",
+                            "Podrá publicar manifiestos y archivos instalables.",
+                        ],
+                    )
+                ],
+            )
+            if _confirm("¿Confiar y añadir este repositorio?"):
+                app.add_pocketool_repository(source_id, url)
+                print(f"Repositorio añadido: {source_id}")
+            continue
+        if option == "2":
+            if not sources:
+                print("No hay repositorios que quitar.")
+                continue
+            choices = [
+                f"[{index}] {source.id} · {source.repository_url}"
+                for index, source in enumerate(sources, start=1)
+            ]
+            choices.append("[Esc] Volver")
+            _print_panel("Quitar repositorio", [("Fuentes", choices)])
+            selected_index = _read_index(len(sources))
+            if selected_index is None:
+                continue
+            selected = sources[selected_index]
+            if _confirm(f"¿Quitar el repositorio {selected.id}?"):
+                app.remove_pocketool_repository(selected.id)
+                print(f"Repositorio eliminado: {selected.id}")
+            continue
+        print("Opción no válida.")
 
 
 def _interactive_advanced_options(

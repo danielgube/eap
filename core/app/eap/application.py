@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from . import __version__
 from .catalog import Catalog, ComponentDefinition
-from .config import Settings
+from .config import DEFAULTS, Settings
 from .console import console_title
 from .core_tools import CoreTools
 from .environments import EnvironmentStore
@@ -26,6 +26,12 @@ from .installer import ComponentInstaller
 from .locks import FileLock
 from .network import HttpClient
 from .paths import EapPaths
+from .pocketools import (
+    PocketToolDefinition,
+    PocketToolInstallResult,
+    PocketToolManager,
+    update_repository_property,
+)
 from .releases import (
     EapReleasePublisher,
     EapReleaseResult,
@@ -148,6 +154,7 @@ class EapApplication:
     def __init__(self, status: Callable[[str], None] | None = None):
         self.paths = EapPaths.discover()
         self.paths.ensure_layout()
+        self.status = status or (lambda message: None)
         self.settings = Settings.load(self.paths.config)
         self.catalog = Catalog.load(self.paths)
         self.environments = EnvironmentStore(self.paths)
@@ -159,7 +166,13 @@ class EapApplication:
             self.settings.get_int("network.timeoutSeconds", minimum=1),
             user_agent=f"EAP/{self.version}",
         )
-        self.status = status or (lambda message: None)
+        self.pocketools = PocketToolManager(
+            self.paths,
+            self.settings,
+            self.client,
+            status=self.status,
+            reserved_commands=self._component_command_names(),
+        )
         self.release_api = GitHubApiClient(
             self.settings.get_int("network.timeoutSeconds", minimum=1),
             user_agent=f"EAP/{self.version}",
@@ -175,6 +188,206 @@ class EapApplication:
     @property
     def version(self) -> str:
         return __version__
+
+    def active_profile_id(self) -> str:
+        requested = os.environ.get("EAP_PROFILE")
+        if requested and requested in self.environments.list():
+            return requested
+        selected = self.environments.selected(
+            self.settings.get("profile.default")
+        )
+        if selected is None:
+            raise ValidationError(
+                "No hay un profile EAP seleccionado para evaluar Pocketools"
+            )
+        return selected
+
+    def available_pocketools(
+        self, *, refresh: bool = False, require_cache: bool = False
+    ) -> list[PocketToolDefinition]:
+        return self.pocketools.available(
+            refresh=refresh,
+            require_cache=require_cache,
+        )
+
+    def refresh_pocketools(
+        self, repository: str | None = None
+    ) -> list[PocketToolDefinition]:
+        return self.pocketools.refresh(repository)
+
+    def install_pocketool(
+        self,
+        selector: str,
+        environment_id: str | None = None,
+        *,
+        refresh: bool = True,
+    ) -> list[PocketToolInstallResult]:
+        profile_id = environment_id or self.active_profile_id()
+        plan = self.pocketools.resolve_installation_plan(
+            selector, refresh=refresh
+        )
+        for definition in plan:
+            self._validate_pocketool_component_requirements(
+                definition.requirements["components"],
+                profile_id,
+                definition.selector,
+            )
+        return self.pocketools.install_plan(plan)
+
+    def update_pocketool(
+        self, selector: str, environment_id: str | None = None
+    ) -> list[PocketToolInstallResult]:
+        self.pocketools.find_installed(selector)
+        return self.install_pocketool(
+            selector,
+            environment_id,
+            refresh=True,
+        )
+
+    def pocketool_updates(self) -> list[dict[str, Any]]:
+        available = {
+            (item.source.id.casefold(), item.id.casefold()): item
+            for item in self.available_pocketools(refresh=True)
+        }
+        updates: list[dict[str, Any]] = []
+        from .pocketools import semver_key
+
+        for installed in self.pocketools.installed():
+            definition = available.get(
+                (
+                    str(installed["repository"]).casefold(),
+                    str(installed["id"]).casefold(),
+                )
+            )
+            if definition is not None and semver_key(
+                definition.version
+            ) > semver_key(str(installed["version"])):
+                updates.append(
+                    {
+                        "repository": definition.source.id,
+                        "id": definition.id,
+                        "name": definition.name,
+                        "currentVersion": installed["version"],
+                        "latestVersion": definition.version,
+                    }
+                )
+        return updates
+
+    def uninstall_pocketool(self, selector: str) -> dict[str, Any]:
+        return self.pocketools.uninstall(selector)
+
+    def pocketool_help(self, selector: str) -> dict[str, Any]:
+        return self.pocketools.help(selector)
+
+    def run_pocketool(
+        self,
+        selector: str,
+        command_name: str,
+        arguments: list[str],
+        environment_id: str | None = None,
+    ) -> int:
+        profile_id = environment_id or self.active_profile_id()
+        installed = self.pocketools.find_installed(selector)
+        self._validate_pocketool_component_requirements(
+            installed["manifest"]["requires"]["components"],
+            profile_id,
+            f"{installed['repository']}/{installed['id']}",
+        )
+        environment = self.environments.build_process_environment(
+            profile_id, self.catalog
+        )
+        return self.pocketools.run(
+            selector,
+            command_name,
+            arguments,
+            environment,
+        )
+
+    def add_pocketool_repository(
+        self, source_id: str, repository_url: str
+    ) -> None:
+        PocketToolManager._repository_urls(repository_url)
+        update_repository_property(
+            self.paths.config, source_id, repository_url.strip()
+        )
+        self._reload_pocketool_settings()
+
+    def remove_pocketool_repository(self, source_id: str) -> None:
+        source = self.pocketools.source(source_id)
+        key = f"pocketools.repository.{source.id}"
+        update_repository_property(
+            self.paths.config,
+            source.id,
+            "" if key in DEFAULTS else None,
+        )
+        self._reload_pocketool_settings()
+
+    def _reload_pocketool_settings(self) -> None:
+        self.settings = Settings.load(self.paths.config)
+        self.pocketools = PocketToolManager(
+            self.paths,
+            self.settings,
+            self.client,
+            status=self.status,
+            reserved_commands=self._component_command_names(),
+        )
+
+    def _component_command_names(self) -> set[str]:
+        names = {
+            str(command["name"])
+            for component in self.catalog.definitions.values()
+            for command in component.value["environment"].get("commands", [])
+        }
+        for component in self.catalog.definitions.values():
+            install = component.value["install"]
+            candidates = [
+                *install.get("requiredFiles", []),
+                *install.get("executableNames", []),
+            ]
+            names.update(
+                Path(str(candidate)).stem
+                for candidate in candidates
+                if Path(str(candidate)).suffix.casefold()
+                in {".exe", ".cmd", ".bat", ".com"}
+            )
+        return names
+
+    def _validate_pocketool_component_requirements(
+        self,
+        requirements: list[dict[str, Any]],
+        environment_id: str,
+        selector: str,
+    ) -> None:
+        inventory = self.inventory(environment_id)
+        active_capabilities: dict[str, dict[str, Any]] = {}
+        for item in inventory:
+            component = self.catalog.component(str(item["id"]))
+            capability = component.value.get("capability")
+            if isinstance(capability, dict) and isinstance(
+                capability.get("id"), str
+            ):
+                active_capabilities[str(capability["id"])] = item
+        missing: list[str] = []
+        for requirement in requirements:
+            capability = str(requirement["capability"])
+            minimum = requirement["minimumTrack"]
+            active = active_capabilities.get(capability)
+            if active is None or not self._track_satisfies(
+                active.get("track"), minimum
+            ):
+                missing.append(f"{capability} (línea >= {minimum})")
+        if missing:
+            raise ValidationError(
+                f"{selector} no puede usarse en el profile {environment_id}; "
+                "faltan componentes: " + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _track_satisfies(current: Any, minimum: Any) -> bool:
+        try:
+            return int(current) >= int(minimum)
+        except (TypeError, ValueError):
+            return str(current).casefold() == str(minimum).casefold()
 
     def resolve(
         self, component_id: str, provider: str, track: int | str
@@ -1547,6 +1760,36 @@ class EapApplication:
             "ok",
             f"{len(self.catalog.definitions)} componente(s) válido(s)",
         )
+        try:
+            sources = self.pocketools.sources()
+            add(
+                "pocketools:sources",
+                "ok" if sources else "warning",
+                (
+                    f"{len(sources)} repositorio(s) configurado(s)"
+                    if sources
+                    else "sin repositorios configurados"
+                ),
+            )
+            installed_pocketools = self.pocketools.installed()
+            failures = [
+                (
+                    f"{item.get('repository')}/{item.get('id')}: "
+                    f"{reason}"
+                )
+                for item in installed_pocketools
+                if (reason := self.pocketools.check_installation(item))
+                is not None
+            ]
+            add(
+                "pocketools:installed",
+                "error" if failures else "ok",
+                "; ".join(failures)
+                if failures
+                else f"{len(installed_pocketools)} Pocketool(s) válida(s)",
+            )
+        except ValidationError as exc:
+            add("pocketools", "error", str(exc))
         selected = self.environments.selected(
             self.settings.get("profile.default")
         )

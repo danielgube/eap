@@ -711,6 +711,7 @@ class VersionTests(unittest.TestCase):
 class EapReleaseTests(unittest.TestCase):
     _MANAGED = [
         "README.md",
+        "config.properties.example",
         "eap.cmd",
         "core/app",
         "core/bootstrap.ps1",
@@ -738,6 +739,7 @@ class EapReleaseTests(unittest.TestCase):
         }
         files = {
             "README.md": "EAP actualizado\n",
+            "config.properties.example": "profile.default=default\n",
             "eap.cmd": "@echo off\r\n",
             "core/app/eap/__init__.py": (
                 '"""EAP."""\n\n'
@@ -1014,6 +1016,7 @@ class EapReleaseTests(unittest.TestCase):
             files = {
                 ".gitignore": "/data/\n/temp/\n/exports/\n",
                 "README.md": "EAP\n",
+                "config.properties.example": "profile.default=default\n",
                 "eap.cmd": "@echo off\r\n",
                 "core/app/eap/__init__.py": f'__version__ = "{version}"\n',
                 "core/bootstrap.ps1": "# bootstrap\n",

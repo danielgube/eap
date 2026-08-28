@@ -4,6 +4,7 @@
   "assetName": "eap-{version}-windows-x64.zip",
   "managedPaths": [
     "README.md",
+    "config.properties.example",
     "eap.cmd",
     "core/add_new_core_tools.md",
     "core/app",

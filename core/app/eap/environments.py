@@ -753,6 +753,7 @@ class EnvironmentStore:
             str(path.resolve())
             for path in CoreTools.load(self.paths).environment_path_entries()
         ]
+        pocketool_entry = str((self.paths.pocketools / "bin").resolve())
         base_entries: list[str] = []
         for entry in environment.get("PATH", "").split(os.pathsep):
             if not entry:
@@ -767,10 +768,21 @@ class EnvironmentStore:
                 normalized.resolve().relative_to(self.paths.components)
                 continue
             except (OSError, ValueError):
+                pass
+            try:
+                normalized.resolve().relative_to(self.paths.pocketools)
+                continue
+            except (OSError, ValueError):
                 base_entries.append(entry)
         environment["PATH"] = os.pathsep.join(
-            [*path_entries, *core_tool_entries, *base_entries]
+            [
+                *path_entries,
+                pocketool_entry,
+                *core_tool_entries,
+                *base_entries,
+            ]
         )
+        environment["EAP_POCKETTOOLS_BIN"] = pocketool_entry
         environment["EAP_CORE_TOOLS"] = os.pathsep.join(core_tool_entries)
         self._apply_configured_environment_variables(
             environment,

@@ -38,6 +38,7 @@ class HttpClient:
         request = urllib.request.Request(url, method="GET")
         try:
             with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                self.require_https(response.geturl())
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > maximum_bytes:
                     raise NetworkError(
@@ -66,6 +67,7 @@ class HttpClient:
         )
         try:
             with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                self.require_https(response.geturl())
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > maximum_bytes:
                     raise NetworkError(
