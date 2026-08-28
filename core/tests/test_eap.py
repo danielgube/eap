@@ -1068,6 +1068,174 @@ class EapReleaseTests(unittest.TestCase):
             self.assertEqual(set(files) - {".gitignore"}, names)
 
 
+@unittest.skipUnless(
+    os.name == "nt" and shutil.which("powershell.exe"),
+    "Windows PowerShell no esta disponible",
+)
+class BootstrapTests(unittest.TestCase):
+    _ICON = (
+        "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}.scale-100.png"
+    )
+
+    def _fixture(self, root: Path) -> tuple[Path, Path]:
+        core = root / "core"
+        core.mkdir(parents=True)
+        bootstrap = core / "bootstrap.ps1"
+        shutil.copyfile(
+            Path(__file__).resolve().parents[1] / "bootstrap.ps1",
+            bootstrap,
+        )
+        archive = (
+            root
+            / "temp"
+            / "core-bootstrap"
+            / "downloads"
+            / "path-tool"
+            / "1.0"
+            / "path-tool.zip"
+        )
+        archive.parent.mkdir(parents=True)
+        with zipfile.ZipFile(archive, "w") as package:
+            package.writestr("package/tool.exe", b"test tool")
+            package.writestr(
+                f"package/ProfileIcons/{self._ICON}",
+                b"test icon",
+            )
+        manifest = core / "core_tools.json"
+        atomic_write_json(
+            manifest,
+            {
+                "schemaVersion": 1,
+                "tools": [
+                    {
+                        "id": "path-tool",
+                        "displayName": "Herramienta de prueba",
+                        "directory": "tools/path-tool",
+                        "executables": ["tool.exe"],
+                        "publishToEnvironmentPath": False,
+                        "version": "1.0",
+                        "bootstrap": {
+                            "requiredFiles": ["tool.exe"],
+                            "artifacts": [
+                                {
+                                    "fileName": "path-tool.zip",
+                                    "url": (
+                                        "https://example.invalid/"
+                                        "path-tool.zip"
+                                    ),
+                                    "sha256": sha256_file(archive),
+                                    "install": {
+                                        "type": "zip",
+                                        "destination": ".",
+                                        "source": "package",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        )
+        return bootstrap, manifest
+
+    @staticmethod
+    def _run(
+        root: Path,
+        bootstrap: Path,
+        manifest: Path,
+        answer: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                str(shutil.which("powershell.exe")),
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(bootstrap),
+                "-ManifestPath",
+                str(manifest),
+            ],
+            cwd=root,
+            input=answer,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+
+    def test_first_bootstrap_confirms_and_extracts_long_zip_paths(
+        self,
+    ) -> None:
+        test_temp = Path(__file__).resolve().parents[2] / "temp"
+        test_temp.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_temp) as temporary:
+            base = Path(temporary)
+            root = next(
+                candidate
+                for length in range(20, 140)
+                for candidate in [base / ("release-" + "x" * length)]
+                if (
+                    len(
+                        str(
+                            candidate
+                            / "temp"
+                            / "core-bootstrap"
+                            / "staging"
+                            / ("path-tool." + "0" * 32)
+                            / "extract"
+                            / "package"
+                            / "ProfileIcons"
+                            / self._ICON
+                        )
+                    )
+                    > 270
+                    and len(str(candidate)) < 180
+                )
+            )
+            root.mkdir()
+            bootstrap, manifest = self._fixture(root)
+
+            completed = self._run(root, bootstrap, manifest, "s\n")
+
+            output = completed.stdout + completed.stderr
+            self.assertEqual(0, completed.returncode, output)
+            self.assertIn(
+                "Bienvenido a Environments Applications Portable (EAP)",
+                output,
+            )
+            self.assertIn("Herramienta de prueba 1.0", output)
+            target = root / "core" / "tools" / "path-tool"
+            self.assertTrue((target / "tool.exe").is_file())
+            self.assertTrue(
+                (target / "ProfileIcons" / self._ICON).is_file()
+            )
+
+            repeated = self._run(root, bootstrap, manifest, "")
+            repeated_output = repeated.stdout + repeated.stderr
+            self.assertEqual(0, repeated.returncode, repeated_output)
+            self.assertNotIn("Bienvenido", repeated_output)
+
+    def test_first_bootstrap_can_be_cancelled(self) -> None:
+        test_temp = Path(__file__).resolve().parents[2] / "temp"
+        test_temp.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_temp) as temporary:
+            root = Path(temporary)
+            bootstrap, manifest = self._fixture(root)
+
+            completed = self._run(root, bootstrap, manifest, "n\n")
+
+            output = completed.stdout + completed.stderr
+            self.assertEqual(2, completed.returncode, output)
+            self.assertIn("configuracion inicial cancelada", output)
+            self.assertFalse(
+                (root / "core" / "tools" / "path-tool").exists()
+            )
+
+
 class SettingsTests(unittest.TestCase):
     def test_profile_default_and_environment_alias_are_bidirectional(
         self,

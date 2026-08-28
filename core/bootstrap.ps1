@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$ManifestPath = "",
-    [switch]$Force
+    [switch]$Force,
+    [switch]$Yes
 )
 
 Set-StrictMode -Version Latest
@@ -31,6 +32,19 @@ function Get-PathWithin {
         throw "$Description sale de su directorio permitido: $Relative"
     }
     return $candidate
+}
+
+function ConvertTo-ExtendedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        return $full
+    }
+    if ($full.StartsWith('\\', [StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $full.Substring(2)
+    }
+    return '\\?\' + $full
 }
 
 function Get-RequiredText {
@@ -195,6 +209,41 @@ function Test-ToolReady {
     return $true
 }
 
+function Confirm-InitialBootstrap {
+    param(
+        [Parameter(Mandatory = $true)][array]$PendingTools,
+        [Parameter(Mandatory = $true)][bool]$AssumeYes
+    )
+
+    if ($AssumeYes) {
+        return $true
+    }
+
+    Write-Host ""
+    Write-Host "Bienvenido a Environments Applications Portable (EAP)."
+    Write-Host ""
+    Write-Host "Para completar la primera configuracion se descargaran " -NoNewline
+    Write-Host "las siguientes herramientas:"
+    Write-Host ""
+    foreach ($pending in $PendingTools) {
+        $tool = $pending.tool
+        Write-Host "  - $($tool.displayName) $($tool.version)"
+    }
+    Write-Host ""
+
+    while ($true) {
+        $answer = Read-Host "Desea continuar? [S/N]"
+        if ([string]::IsNullOrWhiteSpace($answer) -or
+            $answer.Trim() -match '^(n|no)$') {
+            return $false
+        }
+        if ($answer.Trim() -match '^(s|si|yes|y)$') {
+            return $true
+        }
+        Write-Host "Responda S para continuar o N para cancelar."
+    }
+}
+
 function Get-VerifiedArtifact {
     param(
         [Parameter(Mandatory = $true)]$Tool,
@@ -238,10 +287,14 @@ function Expand-ZipSafely {
     )
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    [IO.Directory]::CreateDirectory(
+        (ConvertTo-ExtendedPath $Destination)
+    ) | Out-Null
     $destinationFull = [IO.Path]::GetFullPath($Destination).TrimEnd('\', '/')
     $prefix = $destinationFull + [IO.Path]::DirectorySeparatorChar
-    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    $zip = [IO.Compression.ZipFile]::OpenRead(
+        (ConvertTo-ExtendedPath $Archive)
+    )
     try {
         foreach ($entry in $zip.Entries) {
             $name = $entry.FullName.Replace('/', [IO.Path]::DirectorySeparatorChar)
@@ -253,12 +306,20 @@ function Expand-ZipSafely {
                 throw "Entrada ZIP fuera del destino: $($entry.FullName)"
             }
             if ([string]::IsNullOrEmpty($entry.Name)) {
-                New-Item -ItemType Directory -Path $target -Force | Out-Null
+                [IO.Directory]::CreateDirectory(
+                    (ConvertTo-ExtendedPath $target)
+                ) | Out-Null
                 continue
             }
             $parent = Split-Path -Parent $target
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
-            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+            [IO.Directory]::CreateDirectory(
+                (ConvertTo-ExtendedPath $parent)
+            ) | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile(
+                $entry,
+                (ConvertTo-ExtendedPath $target),
+                $true
+            )
         }
     }
     finally {
@@ -290,7 +351,7 @@ function Install-Artifact {
                 Expand-ZipSafely $Archive $destination
             }
             else {
-                $extractRoot = Join-Path $Payload (".zip." + [Guid]::NewGuid().ToString("N"))
+                $extractRoot = Join-Path (Split-Path -Parent $Payload) "extract"
                 try {
                     Expand-ZipSafely $Archive $extractRoot
                     $source = Get-PathWithin $extractRoot ([string]$install.source) "install.source"
@@ -461,6 +522,8 @@ try {
         throw "core_tools.json no cumple schemaVersion 1"
     }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $pendingTools = @()
+    $readyToolCount = 0
     foreach ($tool in @($manifest.tools)) {
         if ($null -eq $tool.PSObject.Properties["bootstrap"]) {
             continue
@@ -469,9 +532,28 @@ try {
         $directory = Get-RequiredText $tool "directory" "tool $toolId"
         $target = Get-PathWithin $coreRoot $directory "directory de $toolId"
         if (-not $Force -and (Test-ToolReady $tool $target)) {
+            $readyToolCount += 1
             continue
         }
-        Install-CoreTool $tool $target $tempRoot $coreRoot
+        $pendingTools += [pscustomobject]@{
+            tool = $tool
+            target = $target
+        }
+    }
+
+    if (-not $Force -and
+        $readyToolCount -eq 0 -and
+        $pendingTools.Count -gt 0) {
+        $assumeYes = $Yes -or
+            $env:EAP_BOOTSTRAP_YES -match '^(1|true|yes|s|si)$'
+        if (-not (Confirm-InitialBootstrap $pendingTools $assumeYes)) {
+            Write-Host "EAP: configuracion inicial cancelada."
+            exit 2
+        }
+    }
+
+    foreach ($pending in $pendingTools) {
+        Install-CoreTool $pending.tool $pending.target $tempRoot $coreRoot
     }
 }
 catch {

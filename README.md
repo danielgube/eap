@@ -69,9 +69,12 @@ Desde CMD o PowerShell:
     C:\eap\eap.cmd
 
 En un clon nuevo no es necesario copiar los binarios de `core`. La primera
-ejecucion descarga y verifica 7-Zip, mkcert, OpenSSL, CPython Embedded con
-Pillow, ripgrep y Windows Terminal segun `core/core_tools.json`. Las siguientes
-ejecuciones reutilizan las instalaciones validadas.
+ejecucion muestra las herramientas necesarias y solicita confirmacion antes de
+descargar y verificar 7-Zip, mkcert, OpenSSL, CPython Embedded con Pillow,
+ripgrep y Windows Terminal segun `core/core_tools.json`. Las siguientes
+ejecuciones reutilizan las instalaciones validadas y no vuelven a solicitarla.
+Para automatizar directamente el bootstrap se puede pasar `-Yes` a
+`core/bootstrap.ps1`.
 
 El procedimiento para incorporar otra utilidad esta en
 [`core/add_new_core_tools.md`](core/add_new_core_tools.md).
