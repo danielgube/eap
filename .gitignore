@@ -19,6 +19,7 @@
 !/core/commands/
 !/core/commands/**
 !/core/core_tools.json
+!/core/release.json
 !/core/tests/
 !/core/tests/**
 !/core/version.json

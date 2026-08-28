@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "repository": "danielgube/eap",
+  "assetName": "eap-{version}-windows-x64.zip",
+  "managedPaths": [
+    "README.md",
+    "eap.cmd",
+    "core/add_new_core_tools.md",
+    "core/app",
+    "core/bootstrap.ps1",
+    "core/catalog",
+    "core/commands",
+    "core/core_tools.json",
+    "core/release.json",
+    "core/tests",
+    "core/version.json"
+  ]
+}

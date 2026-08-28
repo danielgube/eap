@@ -79,6 +79,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tool_clean_temp.add_argument("--yes", action="store_true")
 
+    eap_update = subparsers.add_parser(
+        "update", help="comprobar o instalar una nueva release de EAP"
+    )
+    eap_update.add_argument(
+        "--check",
+        action="store_true",
+        help="comprobar sin instalar",
+    )
+    eap_update.add_argument("--yes", action="store_true")
+    eap_update.add_argument("--json", action="store_true")
+
+    release_parser = subparsers.add_parser(
+        "release", help="publicar una release administrativa de EAP"
+    )
+    release_parser.add_argument("--json", action="store_true")
+
     catalog_parser = subparsers.add_parser("catalog", help="mostrar catálogo")
     catalog_parser.add_argument("--json", action="store_true")
 
@@ -287,7 +303,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
     try:
-        app = EapApplication(status=_print_status)
+        status = (
+            (lambda message: None)
+            if getattr(arguments, "json", False)
+            else _print_status
+        )
+        app = EapApplication(status=status)
         if arguments.version:
             print(app.version)
             return 0
@@ -333,6 +354,52 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
+    if arguments.command == "release":
+        result = app.publish_eap_release()
+        if arguments.json:
+            _print_json(result.as_json())
+        else:
+            print(f"Release publicada: {result.tag}")
+            print(f"Asset: {result.archive}")
+            print(f"SHA256: {result.sha256}")
+            print(f"GitHub: {result.release_url}")
+        return 0
+
+    if arguments.command == "update":
+        update = app.check_eap_update()
+        if arguments.json and (
+            arguments.check or not update.update_available
+        ):
+            _print_json(update.as_json())
+            return 0
+        if update.latest_version is None:
+            print("No hay releases públicas de EAP.")
+            return 0
+        if not update.update_available:
+            print(f"EAP ya está actualizado: {update.current_version}")
+            return 0
+        if not arguments.json:
+            print(
+                f"Actualización de EAP: {update.current_version} -> "
+                f"{update.latest_version}"
+            )
+        if arguments.check:
+            return 0
+        if arguments.json and not arguments.yes:
+            raise ValidationError(
+                "eap update --json requiere --yes para instalar"
+            )
+        if not arguments.yes and not _confirm("¿Actualizar EAP?"):
+            print("Cancelado.")
+            return 0
+        result = app.install_eap_update(update)
+        if arguments.json:
+            _print_json(result.as_json())
+        else:
+            print(f"EAP actualizado a {result.version}.")
+            print("Cierre y vuelva a abrir EAP para aplicar el nuevo código.")
+        return 0
+
     if arguments.command == "terminal":
         if arguments.terminal_command == "start":
             environment_id = _require_environment(
@@ -856,9 +923,12 @@ def interactive(
                     update_status = _initial_update_status(app, environment_id)
                 elif option == "0":
                     previous_environment = environment_id
-                    environment_id = _interactive_advanced_options(
+                    selected_environment = _interactive_advanced_options(
                         app, environment_id
                     )
+                    if selected_environment is None:
+                        return 0
+                    environment_id = selected_environment
                     if environment_id != previous_environment:
                         _interactive_restore_missing(app, environment_id)
                     update_status = _initial_update_status(
@@ -2637,7 +2707,7 @@ def _interactive_export_tool(app: EapApplication) -> None:
 
 def _interactive_advanced_options(
     app: EapApplication, current: str
-) -> str:
+) -> str | None:
     while True:
         _print_panel(
             "Opciones avanzadas",
@@ -2650,6 +2720,7 @@ def _interactive_advanced_options(
                         "[3] Diagnóstico",
                         "[4] Limpiar temporales",
                         "[5] Integraciones con el Host",
+                        "[6] Actualizar EAP",
                         "[0] Exportar EAP",
                         "[Esc] Volver",
                     ],
@@ -2670,6 +2741,10 @@ def _interactive_advanced_options(
             continue
         if option == "5":
             _interactive_host_integrations(app, current)
+            continue
+        if option == "6":
+            if _interactive_update_eap(app):
+                return None
             continue
         if option == "1":
             profiles = app.environments.list()
@@ -2994,6 +3069,39 @@ def _interactive_clean_temporary_storage(app: EapApplication) -> None:
         f"Temporales eliminados: {_format_bytes(result.bytes_removed)} · "
         f"{result.files_removed} archivo(s)."
     )
+
+
+def _interactive_update_eap(app: EapApplication) -> bool:
+    print("Comprobando la última release pública de EAP...")
+    update = app.check_eap_update()
+    if update.latest_version is None:
+        print("Todavía no hay releases públicas de EAP.")
+        return False
+    if not update.update_available:
+        print(f"EAP ya está actualizado: {update.current_version}")
+        return False
+    release = update.release
+    _print_panel(
+        "Actualizar EAP",
+        [
+            (
+                "Release disponible",
+                [
+                    f"Versión actual: {update.current_version}",
+                    f"Nueva versión: {update.latest_version}",
+                    f"Publicada: {release.published_at if release else '-'}",
+                    "Se conservarán profiles, datos, components, tools y "
+                    "workspaces.",
+                ],
+            )
+        ],
+    )
+    if not _confirm("¿Descargar e instalar la actualización de EAP?"):
+        return False
+    result = app.install_eap_update(update)
+    print(f"EAP actualizado a {result.version}.")
+    print("Cierre y vuelva a abrir EAP para aplicar el nuevo código.")
+    return True
 
 
 def _print_uninstall_result(display_name: str, result: Any) -> None:

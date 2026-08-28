@@ -86,6 +86,7 @@ class HttpClient:
         url: str,
         destination: Path,
         progress: ProgressCallback | None = None,
+        maximum_bytes: int | None = None,
     ) -> tuple[str, int]:
         self.require_https(url)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -101,10 +102,25 @@ class HttpClient:
                 self.require_https(final_url)
                 raw_total = response.headers.get("Content-Length")
                 total = int(raw_total) if raw_total and raw_total.isdigit() else None
+                if (
+                    maximum_bytes is not None
+                    and total is not None
+                    and total > maximum_bytes
+                ):
+                    raise NetworkError(
+                        f"La descarga supera el límite permitido: {url}"
+                    )
                 with destination.open("wb") as output:
                     while chunk := response.read(1024 * 1024):
                         output.write(chunk)
                         downloaded += len(chunk)
+                        if (
+                            maximum_bytes is not None
+                            and downloaded > maximum_bytes
+                        ):
+                            raise NetworkError(
+                                f"La descarga supera el límite permitido: {url}"
+                            )
                         if progress:
                             progress(downloaded, total)
                     output.flush()

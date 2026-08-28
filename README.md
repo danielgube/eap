@@ -52,6 +52,7 @@ internos y como alias compatible de CLI.
 - desactivación independiente de componentes y desinstalación de payloads sin uso;
 - activación local de payloads disponibles sin resolver ni descargar de nuevo;
 - tamaño de temporales visible y limpieza desde la interfaz o la CLI;
+- actualización pública y transaccional de EAP desde releases de GitHub;
 - perfil de usuario portable bajo data y CLI automatizable.
 - contrato `data` declarativo con directorios opcionales y archivos `if-missing`.
 
@@ -97,6 +98,8 @@ Comandos útiles:
     eap.cmd tool export
     eap.cmd tool export eap-offline --include-components
     eap.cmd tool clean-temp
+    eap.cmd update --check
+    eap.cmd update --yes
     eap.cmd component resolve java --provider temurin --track 21
     eap.cmd component install java --provider temurin --track 21 --profile desarrollo
     eap.cmd component install maven --profile desarrollo
@@ -256,9 +259,9 @@ siguen siendo compatibles. Exportar e importar un profile concreto se agrupa baj
 `Gestionar profile`.
 
 La acción principal `[0] Opciones avanzadas` contiene diagnóstico, limpieza de
-temporales, la exportación completa de EAP, las operaciones masivas e
-`Integraciones con el Host`. `Exportar todos los profiles` usa el identificador
-de cada profile como nombre del paquete y no incluye payloads ni
+temporales, actualización de EAP, la exportación completa de EAP, las operaciones
+masivas e `Integraciones con el Host`. `Exportar todos los profiles` usa el
+identificador de cada profile como nombre del paquete y no incluye payloads ni
 `config.properties` privados. Si un archivo de destino ya existe, se informa del
 error y se continúa con los demás sin sobrescribirlo.
 
@@ -279,6 +282,41 @@ seleccionado sólo se elimina cuando la importación ha finalizado correctamente
 si falla la validación o la extracción, permanece intacto para poder reintentarlo.
 El comando `profile import <ruta>` continúa aceptando cualquier ruta explícita y no
 elimina el archivo de origen, por lo que sigue siendo apropiado para scripts.
+
+### Releases y actualización de EAP
+
+`eap update --check` consulta la última release pública de
+`danielgube/eap` sin autenticación. `eap update` instala la actualización después
+de confirmarla y `eap update --yes` permite automatizarla. El mismo flujo está en
+`Opciones avanzadas > [6] Actualizar EAP`.
+
+El asset de release contiene exactamente los archivos versionados del tag salvo
+`.gitignore`; `.git` tampoco forma parte del ZIP. Antes de instalar, EAP comprueba
+el nombre, tamaño y SHA-256 publicado por GitHub, limita y valida la extracción y
+verifica el contrato `core/release.json` y las dos declaraciones de versión. La
+sustitución es transaccional: si falla, restaura el código anterior. Sólo se
+reemplazan las rutas administradas; se conservan `core/tools`, `config.properties`,
+`components`, `data`, `envs`, `exports`, `temp` y `workspaces`. Tras actualizar hay
+que cerrar y volver a abrir EAP. Un checkout que contenga `.git` se protege de este
+flujo y debe actualizarse con Git.
+
+`eap release` es un comando administrativo deliberadamente ausente del menú. Se
+ejecuta desde `main`, con el checkout limpio, `origin` apuntando al repositorio
+oficial y el código sincronizado. Git Credential Manager realiza la autenticación
+normal de GitHub —incluida la ventana del navegador cuando sea necesaria—; EAP no
+pide ni guarda tokens. Antes de publicar comprueba que la cuenta tenga permiso de
+escritura y ejecuta toda la suite de pruebas.
+
+Si todavía no existe ninguna release, se usa la versión local. En las siguientes
+se incrementa el parche de la última release completa. El comando actualiza las
+dos declaraciones de versión, crea y sube el commit y el tag, genera
+`exports/releases/eap-<versión>-windows-x64.zip` junto a su `.sha256`, crea la
+release y sube ambos assets. Una ejecución interrumpida puede reanudar el commit,
+tag, release o asset que haya quedado pendiente sin saltar de versión. Para crear
+una release nueva después de modificar EAP, primero hay que hacer commit y push de
+esos cambios y después ejecutar:
+
+    eap release
 
 Un profile importado sin payloads puede arrancar EAP y abrir shells en modo
 degradado. Los componentes ausentes no publican sus variables ni sus entradas de

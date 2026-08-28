@@ -10,7 +10,7 @@ import unittest
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -26,11 +26,22 @@ from eap.cli import _is_escape, _render_main_dashboard
 from eap.config import DEFAULTS, Settings
 from eap.core_tools import CoreTools
 from eap.environments import EnvironmentStore
-from eap.errors import IntegrityError, ValidationError
+from eap.errors import IntegrityError, TransactionError, ValidationError
 from eap.host_integrations import HostIntegrationManager
 from eap.installer import ComponentInstaller
 from eap.network import HttpClient
 from eap.paths import EapPaths
+from eap.releases import (
+    ASSET_TEMPLATE,
+    EapReleasePublisher,
+    EapReleaseResult,
+    EapReleaseUpdater,
+    EapUpdateResult,
+    GitRepository,
+    GitHubAsset,
+    GitHubRelease,
+    next_patch,
+)
 from eap.resolvers import ResolvedArtifact, resolve_component
 from eap.shortcuts import WindowsShortcutManager
 from eap.terminal import ManagedTerminal
@@ -40,6 +51,7 @@ from eap.util import (
     component_version_key,
     java_version_key,
     load_json,
+    sha256_file,
 )
 
 
@@ -694,6 +706,366 @@ class VersionTests(unittest.TestCase):
             self.assertEqual("3.14", component.validate_track("3.14"))
             with self.assertRaises(ValidationError):
                 component.validate_track("3.15")
+
+
+class EapReleaseTests(unittest.TestCase):
+    _MANAGED = [
+        "README.md",
+        "eap.cmd",
+        "core/app",
+        "core/bootstrap.ps1",
+        "core/catalog",
+        "core/commands",
+        "core/core_tools.json",
+        "core/release.json",
+        "core/version.json",
+    ]
+
+    @staticmethod
+    def _write(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _release_archive(
+        self, root: Path, version: str = "0.20.0"
+    ) -> tuple[Path, GitHubRelease]:
+        archive = root / ASSET_TEMPLATE.format(version=version)
+        manifest = {
+            "schemaVersion": 1,
+            "repository": "danielgube/eap",
+            "assetName": ASSET_TEMPLATE,
+            "managedPaths": self._MANAGED,
+        }
+        files = {
+            "README.md": "EAP actualizado\n",
+            "eap.cmd": "@echo off\r\n",
+            "core/app/eap/__init__.py": (
+                '"""EAP."""\n\n'
+                f'__version__ = "{version}"\n'
+            ),
+            "core/app/eap/new_module.py": "VALUE = 1\n",
+            "core/bootstrap.ps1": "# bootstrap actualizado\n",
+            "core/catalog/catalog.json": "{}\n",
+            "core/commands/eap.cmd": "@echo off\r\n",
+            "core/core_tools.json": "{}\n",
+            "core/release.json": json.dumps(manifest),
+            "core/version.json": json.dumps(
+                {"schemaVersion": 1, "name": "EAP", "version": version}
+            ),
+        }
+        with zipfile.ZipFile(
+            archive, "w", compression=zipfile.ZIP_DEFLATED
+        ) as package:
+            for name, content in files.items():
+                package.writestr(name, content)
+        digest = sha256_file(archive)
+        asset = GitHubAsset(
+            id=10,
+            name=archive.name,
+            browser_download_url=(
+                "https://github.com/danielgube/eap/releases/download/"
+                f"v{version}/{archive.name}"
+            ),
+            digest=f"sha256:{digest}",
+            size=archive.stat().st_size,
+        )
+        release = GitHubRelease(
+            id=20,
+            tag_name=f"v{version}",
+            name=f"EAP v{version}",
+            html_url=f"https://github.com/danielgube/eap/releases/v{version}",
+            published_at="2026-08-28T12:00:00Z",
+            assets=(asset,),
+        )
+        return archive, release
+
+    def test_release_version_uses_first_local_then_increments_patch(
+        self,
+    ) -> None:
+        self.assertEqual("0.19.1", next_patch("v0.19.0"))
+        self.assertEqual(
+            "0.19.0", EapReleasePublisher._target_version("0.19.0", None)
+        )
+        latest = GitHubRelease(
+            id=1,
+            tag_name="v0.19.0",
+            name="EAP v0.19.0",
+            html_url="https://example.test/release",
+            published_at=None,
+            assets=(
+                GitHubAsset(
+                    id=10,
+                    name="eap-0.19.0-windows-x64.zip",
+                    browser_download_url="https://example.test/eap.zip",
+                    digest=f"sha256:{'a' * 64}",
+                    size=1,
+                ),
+                GitHubAsset(
+                    id=11,
+                    name="eap-0.19.0-windows-x64.zip.sha256",
+                    browser_download_url="https://example.test/eap.sha256",
+                    digest=f"sha256:{'b' * 64}",
+                    size=1,
+                ),
+            ),
+        )
+        self.assertEqual(
+            "0.19.1",
+            EapReleasePublisher._target_version("0.19.0", latest),
+        )
+        self.assertEqual(
+            "0.19.1",
+            EapReleasePublisher._target_version("0.19.1", latest),
+        )
+        incomplete = GitHubRelease(
+            id=2,
+            tag_name="v0.19.0",
+            name="EAP v0.19.0",
+            html_url="https://example.test/incomplete",
+            published_at=None,
+            assets=(),
+        )
+        self.assertEqual(
+            "0.19.0",
+            EapReleasePublisher._target_version("0.19.0", incomplete),
+        )
+        with self.assertRaises(ValidationError):
+            EapReleasePublisher._target_version("0.20.0", latest)
+
+    def test_public_update_replaces_only_managed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = EapPaths.from_root(root)
+            paths.ensure_layout()
+            self._write(root / "README.md", "anterior\n")
+            self._write(root / "eap.cmd", "anterior\n")
+            self._write(
+                paths.core / "app" / "eap" / "obsolete.py", "OLD = 1\n"
+            )
+            self._write(
+                paths.core / "app" / "eap" / "__init__.py",
+                '__version__ = "0.19.0"\n',
+            )
+            self._write(paths.core / "bootstrap.ps1", "# anterior\n")
+            self._write(paths.catalog, "{}\n")
+            self._write(paths.core / "commands" / "eap.cmd", "anterior\n")
+            self._write(paths.core / "core_tools.json", "{}\n")
+            self._write(paths.core / "release.json", "{}\n")
+            self._write(
+                paths.core / "version.json",
+                json.dumps(
+                    {"schemaVersion": 1, "name": "EAP", "version": "0.19.0"}
+                ),
+            )
+            self._write(paths.core / "tools" / "keep.txt", "tool\n")
+            self._write(paths.data / "keep.txt", "datos\n")
+            self._write(paths.components / "keep.txt", "component\n")
+            source, release = self._release_archive(root)
+
+            class Api:
+                @staticmethod
+                def latest_release() -> GitHubRelease:
+                    return release
+
+            class Http:
+                @staticmethod
+                def download(
+                    url: str,
+                    destination: Path,
+                    progress: Any = None,
+                    maximum_bytes: int | None = None,
+                ) -> tuple[str, int]:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+                    return url, destination.stat().st_size
+
+            updater = EapReleaseUpdater(paths, Http(), Api())
+            update = updater.check("0.19.0")
+            self.assertTrue(update.update_available)
+            result = updater.install(update)
+
+            self.assertEqual("0.20.0", result.version)
+            self.assertEqual("EAP actualizado\n", (root / "README.md").read_text())
+            self.assertFalse(
+                (paths.core / "app" / "eap" / "obsolete.py").exists()
+            )
+            self.assertTrue(
+                (paths.core / "app" / "eap" / "new_module.py").is_file()
+            )
+            self.assertEqual(
+                "tool\n",
+                (paths.core / "tools" / "keep.txt").read_text(),
+            )
+            self.assertEqual("datos\n", (paths.data / "keep.txt").read_text())
+            self.assertEqual(
+                "component\n", (paths.components / "keep.txt").read_text()
+            )
+
+    def test_update_check_does_not_require_an_asset_when_not_newer(self) -> None:
+        release = GitHubRelease(
+            id=1,
+            tag_name="v0.19.0",
+            name="EAP v0.19.0",
+            html_url="https://example.test/release",
+            published_at=None,
+            assets=(),
+        )
+        api = SimpleNamespace(latest_release=lambda: release)
+        updater = EapReleaseUpdater(
+            SimpleNamespace(), SimpleNamespace(), api
+        )
+
+        result = updater.check("0.20.0")
+
+        self.assertFalse(result.update_available)
+        self.assertIsNone(result.asset)
+
+    def test_update_rolls_back_every_managed_path_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = EapPaths.from_root(root)
+            paths.ensure_layout()
+            payload = root / "payload"
+            transaction = root / "transaction"
+            self._write(root / "README.md", "README anterior\n")
+            self._write(root / "eap.cmd", "EAP anterior\n")
+            self._write(payload / "README.md", "README nuevo\n")
+            self._write(payload / "eap.cmd", "EAP nuevo\n")
+            updater = EapReleaseUpdater(
+                paths, SimpleNamespace(), SimpleNamespace()
+            )
+            original_replace = Path.replace
+
+            def failing_replace(source: Path, target: Path) -> Path:
+                if source == payload / "eap.cmd":
+                    raise OSError("fallo forzado")
+                return original_replace(source, target)
+
+            with patch.object(Path, "replace", new=failing_replace):
+                with self.assertRaises(TransactionError):
+                    updater._commit(
+                        payload,
+                        (
+                            PurePosixPath("README.md"),
+                            PurePosixPath("eap.cmd"),
+                        ),
+                        transaction,
+                    )
+
+            self.assertEqual(
+                "README anterior\n", (root / "README.md").read_text()
+            )
+            self.assertEqual("EAP anterior\n", (root / "eap.cmd").read_text())
+
+    def test_public_update_is_disabled_in_git_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = EapPaths.from_root(root)
+            paths.ensure_layout()
+            (root / ".git").mkdir()
+            _, release = self._release_archive(root)
+
+            class Api:
+                @staticmethod
+                def latest_release() -> GitHubRelease:
+                    return release
+
+            updater = EapReleaseUpdater(paths, SimpleNamespace(), Api())
+            with self.assertRaisesRegex(ValidationError, "checkout Git"):
+                updater.install(updater.check("0.19.0"))
+
+    def test_release_zip_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "bad.zip"
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("../outside.txt", "no")
+            with self.assertRaisesRegex(IntegrityError, "Ruta no válida"):
+                EapReleaseUpdater._extract_release(
+                    archive, root / "extracted"
+                )
+
+    def test_release_zip_rejects_windows_device_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "bad-device.zip"
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("core/CON.txt", "no")
+            with self.assertRaisesRegex(
+                IntegrityError, "no permitido en Windows"
+            ):
+                EapReleaseUpdater._extract_release(
+                    archive, root / "extracted"
+                )
+
+    @unittest.skipUnless(shutil.which("git"), "Git no está disponible")
+    def test_release_asset_matches_git_and_is_reproducible(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = EapPaths.from_root(root)
+            paths.ensure_layout()
+            version = "0.20.0"
+            manifest = {
+                "schemaVersion": 1,
+                "repository": "danielgube/eap",
+                "assetName": ASSET_TEMPLATE,
+                "managedPaths": self._MANAGED,
+            }
+            files = {
+                ".gitignore": "/data/\n/temp/\n/exports/\n",
+                "README.md": "EAP\n",
+                "eap.cmd": "@echo off\r\n",
+                "core/app/eap/__init__.py": f'__version__ = "{version}"\n',
+                "core/bootstrap.ps1": "# bootstrap\n",
+                "core/catalog/catalog.json": "{}\n",
+                "core/commands/eap.cmd": "@echo off\r\n",
+                "core/core_tools.json": "{}\n",
+                "core/release.json": json.dumps(manifest),
+                "core/version.json": json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "name": "EAP",
+                        "version": version,
+                    }
+                ),
+            }
+            for name, content in files.items():
+                self._write(root / name, content)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", *files], cwd=root, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=EAP Test",
+                    "-c",
+                    "user.email=eap@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "test release",
+                ],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "tag", f"v{version}"], cwd=root, check=True
+            )
+            publisher = EapReleasePublisher(paths, 10, "EAP/Test")
+            repository = GitRepository(root)
+
+            archive = publisher._build_archive(
+                repository, f"v{version}", version
+            )
+            first_digest = sha256_file(archive)
+            archive = publisher._build_archive(
+                repository, f"v{version}", version
+            )
+
+            self.assertEqual(first_digest, sha256_file(archive))
+            with zipfile.ZipFile(archive) as package:
+                names = {item.filename for item in package.infolist()}
+            self.assertEqual(set(files) - {".gitignore"}, names)
 
 
 class SettingsTests(unittest.TestCase):
@@ -3628,7 +4000,7 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module,
                 "_read_input",
-                side_effect=["3", "4", "5", "\x1b"],
+                side_effect=["3", "4", "5", "6", "\x1b"],
             ),
             patch.object(cli_module, "_interactive_doctor") as doctor,
             patch.object(
@@ -3637,6 +4009,9 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module, "_interactive_host_integrations"
             ) as integrations,
+            patch.object(
+                cli_module, "_interactive_update_eap", return_value=False
+            ) as update_eap,
             redirect_stdout(output),
         ):
             selected = cli_module._interactive_advanced_options(
@@ -3646,13 +4021,68 @@ class InterfaceTests(unittest.TestCase):
         doctor.assert_called_once()
         clean.assert_called_once()
         integrations.assert_called_once_with(unittest.mock.ANY, "default")
+        update_eap.assert_called_once()
         rendered = output.getvalue()
         self.assertIn("[1] Exportar todos los profiles", rendered)
         self.assertIn("[2] Importar todos los profiles", rendered)
         self.assertIn("[3] Diagnóstico", rendered)
         self.assertIn("[4] Limpiar temporales", rendered)
         self.assertIn("[5] Integraciones con el Host", rendered)
+        self.assertIn("[6] Actualizar EAP", rendered)
         self.assertIn("[0] Exportar EAP", rendered)
+
+    def test_cli_installs_public_eap_update(self) -> None:
+        release = SimpleNamespace(published_at="2026-08-28T12:00:00Z")
+        update = SimpleNamespace(
+            current_version="0.19.0",
+            latest_version="0.20.0",
+            update_available=True,
+            release=release,
+        )
+        result = EapUpdateResult(
+            previous_version="0.19.0",
+            version="0.20.0",
+            archive=Path(r"C:\eap\temp\eap-0.20.0.zip"),
+            sha256="a" * 64,
+        )
+        installed: list[Any] = []
+        app = SimpleNamespace(
+            check_eap_update=lambda: update,
+            install_eap_update=lambda selected: (
+                installed.append(selected) or result
+            ),
+        )
+        arguments = cli_module.build_parser().parse_args(
+            ["update", "--yes"]
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            code = cli_module.dispatch(app, arguments)
+
+        self.assertEqual(0, code)
+        self.assertEqual([update], installed)
+        self.assertIn("0.19.0 -> 0.20.0", output.getvalue())
+        self.assertIn("vuelva a abrir EAP", output.getvalue())
+
+    def test_cli_release_routes_to_the_administrative_publisher(self) -> None:
+        result = EapReleaseResult(
+            version="0.19.0",
+            tag="v0.19.0",
+            archive=Path(r"C:\eap\exports\releases\eap-0.19.0.zip"),
+            sha256="a" * 64,
+            release_url="https://github.com/danielgube/eap/releases/v0.19.0",
+            created=True,
+        )
+        app = SimpleNamespace(publish_eap_release=lambda: result)
+        arguments = cli_module.build_parser().parse_args(["release"])
+        output = StringIO()
+
+        with redirect_stdout(output):
+            code = cli_module.dispatch(app, arguments)
+
+        self.assertEqual(0, code)
+        self.assertIn("Release publicada: v0.19.0", output.getvalue())
+        self.assertIn(result.release_url, output.getvalue())
 
     def test_interactive_error_is_red_and_waits_for_one_key(self) -> None:
         output = TtyStringIO()

@@ -26,6 +26,14 @@ from .installer import ComponentInstaller
 from .locks import FileLock
 from .network import HttpClient
 from .paths import EapPaths
+from .releases import (
+    EapReleasePublisher,
+    EapReleaseResult,
+    EapReleaseUpdater,
+    EapUpdateResult,
+    EapUpdateStatus,
+    GitHubApiClient,
+)
 from .resolvers import ResolvedArtifact, resolve_component
 from .shortcuts import ShortcutResult, WindowsShortcutManager
 from .terminal import ManagedTerminal, TerminalLaunch
@@ -152,6 +160,16 @@ class EapApplication:
             user_agent=f"EAP/{self.version}",
         )
         self.status = status or (lambda message: None)
+        self.release_api = GitHubApiClient(
+            self.settings.get_int("network.timeoutSeconds", minimum=1),
+            user_agent=f"EAP/{self.version}",
+        )
+        self.release_updater = EapReleaseUpdater(
+            self.paths,
+            self.client,
+            self.release_api,
+            status=self.status,
+        )
         self.update_cache_path = self.paths.data / "update-checks.json"
 
     @property
@@ -987,6 +1005,24 @@ class EapApplication:
             track,
             artifact=latest,
         )
+
+    def check_eap_update(self) -> EapUpdateStatus:
+        return self.release_updater.check(self.version)
+
+    def install_eap_update(
+        self, update: EapUpdateStatus | None = None
+    ) -> EapUpdateResult:
+        selected = update or self.check_eap_update()
+        return self.release_updater.install(selected)
+
+    def publish_eap_release(self) -> EapReleaseResult:
+        publisher = EapReleasePublisher(
+            self.paths,
+            self.settings.get_int("network.timeoutSeconds", minimum=1),
+            user_agent=f"EAP/{self.version}",
+            status=self.status,
+        )
+        return publisher.publish()
 
     def temporary_storage_usage(self) -> TemporaryStorageUsage:
         size, files = self._storage_usage(self.paths.temp)
