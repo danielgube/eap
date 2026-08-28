@@ -60,7 +60,9 @@ class WindowsShortcutManager:
         display_name: str,
         icon: Path,
     ) -> ShortcutResult:
-        pythonw = self.paths.core / "python-embed" / "pythonw.exe"
+        pythonw = (
+            self.paths.core / "tools" / "python-embed" / "pythonw.exe"
+        )
         if not pythonw.is_file():
             raise ValidationError(
                 f"No existe el lanzador gráfico privado: {pythonw}"

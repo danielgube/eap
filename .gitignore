@@ -12,6 +12,7 @@
 /core/*
 !/core/app/
 !/core/app/**
+!/core/add_new_core_tools.md
 !/core/bootstrap.ps1
 !/core/catalog/
 !/core/catalog/**

@@ -65,7 +65,7 @@ class ManagedTerminal:
         cmd_guid = self._profile_guid("cmd")
         powershell_guid = self._profile_guid("powershell")
         manager_name = "EAP · Gestor"
-        python = self.paths.core / "python-embed" / "python.exe"
+        python = self.paths.core / "tools" / "python-embed" / "python.exe"
         if not python.is_file():
             raise ValidationError(
                 f"No se encuentra el runtime privado de EAP: {python}"

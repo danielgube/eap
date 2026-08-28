@@ -10,7 +10,10 @@
       "type": "application",
       "workspaceMode": "environment",
       "executable": "{{external.executable}}",
-      "arguments": [],
+      "arguments": [
+        "--new-window",
+        "{{workspace.selected}}"
+      ],
       "startMode": "detached"
     }
   ],

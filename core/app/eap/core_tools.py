@@ -35,6 +35,18 @@ class CoreTool:
             )
         return executable
 
+    def environment_path_entries(self) -> list[Path]:
+        entries: list[Path] = []
+        seen: set[str] = set()
+        for name in self.executables:
+            entry = self.executable(name).parent
+            normalized = str(entry).casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            entries.append(entry)
+        return entries
+
 
 @dataclass(frozen=True)
 class CoreTools:
@@ -87,9 +99,7 @@ class CoreTools:
                 ) from exc
             executables = entry["executables"]
             if not isinstance(executables, list) or not executables or not all(
-                isinstance(name, str)
-                and name
-                and Path(name).name == name
+                isinstance(name, str) and name
                 for name in executables
             ):
                 raise ValidationError(
@@ -121,11 +131,18 @@ class CoreTools:
             ) from exc
 
     def environment_path_entries(self) -> list[Path]:
-        return [
-            tool.root
-            for tool in self.definitions.values()
-            if tool.publish_to_environment_path
-        ]
+        entries: list[Path] = []
+        seen: set[str] = set()
+        for tool in self.definitions.values():
+            if not tool.publish_to_environment_path:
+                continue
+            for entry in tool.environment_path_entries():
+                normalized = str(entry).casefold()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                entries.append(entry)
+        return entries
 
     def as_json(self) -> list[dict[str, Any]]:
         return [
@@ -135,6 +152,12 @@ class CoreTools:
                 "root": str(tool.root),
                 "executables": list(tool.executables),
                 "publishedToPath": tool.publish_to_environment_path,
+                "pathEntries": [
+                    str(path)
+                    for path in tool.environment_path_entries()
+                ]
+                if tool.publish_to_environment_path
+                else [],
             }
             for tool in self.definitions.values()
         ]

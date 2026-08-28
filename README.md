@@ -55,10 +55,11 @@ internos y como alias compatible de CLI.
 - perfil de usuario portable bajo data y CLI automatizable.
 - contrato `data` declarativo con directorios opcionales y archivos `if-missing`.
 
-CPython continúa siendo un runtime privado. Solo las utilidades incluidas en
-`core/core_tools.json` que lo indiquen expresamente pueden publicarse en el `PATH` de los
-procesos hijos. Esto deja preparado un punto controlado para futuras herramientas
-pequeñas o comandos propios sin convertir todo `core` en una ruta pública.
+CPython continúa siendo un runtime privado. Los payloads ejecutables viven bajo
+`core/tools`; solo las utilidades incluidas en `core/core_tools.json` que lo
+indiquen expresamente pueden publicar en el `PATH` de los procesos hijos las
+carpetas que contienen sus ejecutables. Así `core` no se convierte en una ruta
+pública y herramientas como OpenSSL pueden exponer únicamente su subcarpeta `bin`.
 
 ## Inicio rápido
 
@@ -67,12 +68,12 @@ Desde CMD o PowerShell:
     C:\eap\eap.cmd
 
 En un clon nuevo no es necesario copiar los binarios de `core`. La primera
-ejecucion descarga y verifica 7-Zip, CPython Embedded con Pillow y Windows
-Terminal segun `core/core_tools.json`. Las siguientes ejecuciones reutilizan las
-instalaciones validadas.
+ejecucion descarga y verifica 7-Zip, mkcert, OpenSSL, CPython Embedded con
+Pillow, ripgrep y Windows Terminal segun `core/core_tools.json`. Las siguientes
+ejecuciones reutilizan las instalaciones validadas.
 
 El procedimiento para incorporar otra utilidad esta en
-[`add_new_core_tools.md`](add_new_core_tools.md).
+[`core/add_new_core_tools.md`](core/add_new_core_tools.md).
 
 Comandos útiles:
 
@@ -128,8 +129,10 @@ y Python 3.14.7, además de DBeaver Community 26.1.5 y Visual Studio Code
 
 core es infraestructura privada de EAP. Su ruta y la de python-embed no se añaden
 al PATH en bloque ni se publican como variables de componentes. Las herramientas
-core declaradas son la única excepción: `core\7zip` se añade de forma explícita y
-se publica también mediante `EAP_CORE_TOOLS`.
+core declaradas son la única excepción: se añaden de forma explícita
+`core\tools\7zip`, `core\tools\mkcert`, `core\tools\openssl\bin`,
+`core\tools\ripgrep` y `core\commands`. Las mismas rutas se publican mediante
+`EAP_CORE_TOOLS`.
 
 Al abrir un shell, EAP parte del entorno del proceso anfitrión, elimina cualquier
 entrada que apunte a core y añade solamente las rutas declaradas por los
@@ -169,7 +172,7 @@ que lo invocó. También puede iniciarse expresamente mediante
 
 Las pestañas activadas publican `core\commands` de forma explícita en `PATH`.
 Esto permite ejecutar `eap`, `eap doctor` o cualquier otro subcomando sin conocer
-la ubicación física del lanzador. El runtime `core\python-embed` continúa fuera
+la ubicación física del lanzador. El runtime `core\tools\python-embed` continúa fuera
 de `PATH`. Las rutas de datos, configuración y workspace mostradas en el panel
 son absolutas para que puedan copiarse directamente a CMD, PowerShell o Explorer.
 
@@ -207,7 +210,8 @@ posteriormente se elimina, no podrá restaurarse exactamente desde el lock y hab
 que instalar o actualizar el componente desde el catálogo.
 
 La pantalla principal muestra el tamaño y número de archivos de `temp`. La acción
-`[4] Limpiar temporales` y `tool clean-temp` eliminan descargas, staging,
+`Opciones avanzadas > [4] Limpiar temporales` y `tool clean-temp` eliminan
+descargas, staging,
 transacciones y logs, pero se niegan a ejecutarse mientras hay otra operación EAP
 activa.
 
@@ -251,8 +255,9 @@ nuevo profile. Los antiguos comandos `env` y paquetes `eap-environment-export`
 siguen siendo compatibles. Exportar e importar un profile concreto se agrupa bajo
 `Gestionar profile`.
 
-La acción principal `[0] Opciones avanzadas` contiene la exportación completa de
-EAP, las operaciones masivas y `Integraciones con el Host`. `Exportar todos los profiles` usa el identificador
+La acción principal `[0] Opciones avanzadas` contiene diagnóstico, limpieza de
+temporales, la exportación completa de EAP, las operaciones masivas e
+`Integraciones con el Host`. `Exportar todos los profiles` usa el identificador
 de cada profile como nombre del paquete y no incluye payloads ni
 `config.properties` privados. Si un archivo de destino ya existe, se informa del
 error y se continúa con los demás sin sobrescribirlo.
@@ -369,7 +374,7 @@ se redirigen respectivamente a `.npm`, `.npmrc` y `.npm-global` dentro del perfi
 La ruta `.npm-global` se añade también al `PATH`, por lo que los comandos
 instalados con `npm install -g` permanecen portables y no modifican el payload.
 
-El Python de `core/python-embed` es exclusivamente el motor privado de EAP: no
+El Python de `core/tools/python-embed` es exclusivamente el motor privado de EAP: no
 se publica ni se utiliza para proyectos. El componente Python descarga el ZIP
 completo `PythonCore` del índice oficial de Python Install Manager. Incluye
 `venv`, `ensurepip` y pip; EAP genera un `pip.cmd` portable y mantiene paquetes,
@@ -455,9 +460,13 @@ workspace ni la activación portable del profile.
 
 ## Estructura
 
-- core/python-embed: runtime privado mínimo;
-- core/7zip: herramienta de compresión y transferencia;
-- core/windows-terminal: Windows Terminal portable administrado;
+- core/tools: payloads ejecutables administrados por el bootstrap;
+- core/tools/python-embed: runtime privado mínimo;
+- core/tools/7zip: herramienta de compresión y transferencia;
+- core/tools/mkcert: certificados locales de desarrollo;
+- core/tools/openssl: CLI y librerías criptográficas portables;
+- core/tools/ripgrep: búsqueda recursiva rápida;
+- core/tools/windows-terminal: Windows Terminal portable administrado;
 - core/bootstrap.ps1: reconstruccion transaccional de payloads core ausentes;
 - core/core_tools.json: herramientas core, descargas, hashes e instalacion;
 - core/app/eap: motor de EAP;
@@ -501,6 +510,6 @@ documenta las opciones generales sin contener secretos.
 
 ## Pruebas
 
-    core\python-embed\python.exe -B -I -X utf8 -m unittest discover -s core\tests -v
+    core\tools\python-embed\python.exe -B -I -X utf8 -m unittest discover -s core\tests -v
 
 El diseño completo, las decisiones y las siguientes fases están en sdd_plan.

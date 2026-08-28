@@ -4,7 +4,7 @@
     {
       "id": "7zip",
       "displayName": "7-Zip",
-      "directory": "7zip",
+      "directory": "tools/7zip",
       "executables": [
         "7z.exe"
       ],
@@ -50,9 +50,97 @@
       }
     },
     {
+      "id": "mkcert",
+      "displayName": "mkcert",
+      "directory": "tools/mkcert",
+      "executables": [
+        "mkcert.exe"
+      ],
+      "publishToEnvironmentPath": true,
+      "version": "1.4.4",
+      "bootstrap": {
+        "requiredFiles": [
+          "mkcert.exe"
+        ],
+        "artifacts": [
+          {
+            "fileName": "mkcert-v1.4.4-windows-amd64.exe",
+            "url": "https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-windows-amd64.exe",
+            "sha256": "d2660b50a9ed59eada480750561c96abc2ed4c9a38c6a24d93e30e0977631398",
+            "install": {
+              "type": "file",
+              "destination": ".",
+              "target": "mkcert.exe"
+            }
+          }
+        ],
+        "validation": [
+          {
+            "type": "command",
+            "path": "mkcert.exe",
+            "arguments": [
+              "-version"
+            ],
+            "expectContains": "v1.4.4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "openssl",
+      "displayName": "OpenSSL",
+      "directory": "tools/openssl",
+      "executables": [
+        "bin\\openssl.exe"
+      ],
+      "publishToEnvironmentPath": true,
+      "version": "3.5.7",
+      "bootstrap": {
+        "requiredFiles": [
+          "bin\\openssl.exe",
+          "bin\\libcrypto-3-x64.dll",
+          "bin\\libssl-3-x64.dll",
+          "lib\\ossl-modules\\legacy.dll",
+          "ssl\\openssl.cnf"
+        ],
+        "artifacts": [
+          {
+            "fileName": "openssl-3.5.7.zip",
+            "url": "https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-3.5.7.zip",
+            "sha256": "2591459a06a6df2d2e2b23b02a28d7c180b95c02fb4965099a708b7365a74014",
+            "install": {
+              "type": "zip",
+              "destination": ".",
+              "source": "x64"
+            }
+          },
+          {
+            "fileName": "openssl-3.5.7.zip",
+            "url": "https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-3.5.7.zip",
+            "sha256": "2591459a06a6df2d2e2b23b02a28d7c180b95c02fb4965099a708b7365a74014",
+            "install": {
+              "type": "zip",
+              "destination": "ssl",
+              "source": "ssl"
+            }
+          }
+        ],
+        "validation": [
+          {
+            "type": "command",
+            "path": "bin\\openssl.exe",
+            "arguments": [
+              "version"
+            ],
+            "expectContains": "OpenSSL 3.5.7"
+          }
+        ]
+      }
+    },
+    {
       "id": "python-embed",
       "displayName": "CPython Embedded con Pillow",
-      "directory": "python-embed",
+      "directory": "tools/python-embed",
       "executables": [
         "python.exe",
         "pythonw.exe"
@@ -92,7 +180,7 @@
           "entries": [
             "python314.zip",
             ".",
-            "..\\app"
+            "..\\..\\app"
           ]
         },
         "validation": [
@@ -113,6 +201,44 @@
       }
     },
     {
+      "id": "ripgrep",
+      "displayName": "ripgrep",
+      "directory": "tools/ripgrep",
+      "executables": [
+        "rg.exe"
+      ],
+      "publishToEnvironmentPath": true,
+      "version": "15.2.0",
+      "bootstrap": {
+        "requiredFiles": [
+          "rg.exe",
+          "LICENSE-MIT"
+        ],
+        "artifacts": [
+          {
+            "fileName": "ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+            "sha256": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
+            "install": {
+              "type": "zip",
+              "destination": ".",
+              "source": "ripgrep-15.2.0-x86_64-pc-windows-msvc"
+            }
+          }
+        ],
+        "validation": [
+          {
+            "type": "command",
+            "path": "rg.exe",
+            "arguments": [
+              "--version"
+            ],
+            "expectContains": "ripgrep 15.2.0"
+          }
+        ]
+      }
+    },
+    {
       "id": "eap-commands",
       "displayName": "Comandos EAP",
       "directory": "commands",
@@ -124,7 +250,7 @@
     {
       "id": "windows-terminal",
       "displayName": "Windows Terminal Portable",
-      "directory": "windows-terminal",
+      "directory": "tools/windows-terminal",
       "executables": [
         "WindowsTerminal.exe",
         "wt.exe"

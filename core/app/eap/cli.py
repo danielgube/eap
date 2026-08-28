@@ -328,8 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\nOperación cancelada.", file=sys.stderr)
         return 130
     except EapError as exc:
-        if sys.stderr is not None:
-            print(f"ERROR: {exc}", file=sys.stderr)
+        _print_error(str(exc))
         return 1
 
 
@@ -855,25 +854,6 @@ def interactive(
                     if environment_id != previous_environment:
                         _interactive_restore_missing(app, environment_id)
                     update_status = _initial_update_status(app, environment_id)
-                elif option == "3":
-                    checks = app.doctor()
-                    _print_panel(
-                        "Diagnóstico",
-                        [
-                            (
-                                "",
-                                [
-                                    f"[{check['status'].upper()}] "
-                                    f"{check['name']}: {check['detail']}"
-                                    for check in checks
-                                ],
-                            ),
-                            ("Continuar", ["Pulse Intro o Esc para volver"]),
-                        ],
-                    )
-                    _read_input("> ")
-                elif option == "4":
-                    _interactive_clean_temporary_storage(app)
                 elif option == "0":
                     previous_environment = environment_id
                     environment_id = _interactive_advanced_options(
@@ -891,7 +871,7 @@ def interactive(
                 else:
                     print("Opción no válida.")
             except EapError as exc:
-                print(f"ERROR: {exc}")
+                _print_error(str(exc), pause=True)
 
 
 def _close_interactive(
@@ -1044,8 +1024,6 @@ def _render_main_dashboard(
                 [
                     "[1] Catálogo de componentes",
                     "[2] Gestionar profile",
-                    "[3] Diagnóstico",
-                    "[4] Limpiar temporales",
                     "[0] Opciones avanzadas",
                     "[Esc] Cerrar interfaz",
                 ],
@@ -2136,8 +2114,9 @@ def _configure_console_color() -> None:
     _COLOR_ENABLED = True
 
 
-def _style(text: str, color: str) -> str:
-    if not _COLOR_ENABLED or not _stream_is_terminal(sys.stdout):
+def _style(text: str, color: str, stream: Any | None = None) -> str:
+    target = sys.stdout if stream is None else stream
+    if not _COLOR_ENABLED or not _stream_is_terminal(target):
         return text
     return f"{color}{text}{_ANSI_RESET}"
 
@@ -2145,21 +2124,7 @@ def _style(text: str, color: str) -> str:
 def _colorize_panel_row(row: str, content: str) -> str:
     if not _COLOR_ENABLED or not _stream_is_terminal(sys.stdout):
         return row
-    if content.startswith("┌─"):
-        return _style(row, _ANSI_CYAN)
-    if content.startswith("└─"):
-        return _style(row, _ANSI_CYAN)
-    replacements = (
-        ("ERROR", _ANSI_RED),
-        ("KO", _ANSI_RED),
-        ("OK", _ANSI_GREEN),
-        ("AVISO", _ANSI_YELLOW),
-        ("✓", _ANSI_GREEN),
-    )
-    colored = row
-    for token, color in replacements:
-        colored = colored.replace(token, _style(token, color))
-    for marker in (
+    markers = (
         "[0]",
         "[1]",
         "[2]",
@@ -2175,8 +2140,28 @@ def _colorize_panel_row(row: str, content: str) -> str:
         "[N]",
         "[R]",
         "[Esc]",
-    ):
-        colored = colored.replace(marker, _style(marker, _ANSI_CYAN))
+    )
+    if content.startswith("┌─"):
+        colored = _style(row, _ANSI_CYAN)
+        for marker in markers:
+            colored = colored.replace(
+                marker, f"{_ANSI_YELLOW}{marker}{_ANSI_CYAN}"
+            )
+        return colored
+    if content.startswith("└─"):
+        return _style(row, _ANSI_CYAN)
+    replacements = (
+        ("ERROR", _ANSI_RED),
+        ("KO", _ANSI_RED),
+        ("OK", _ANSI_GREEN),
+        ("AVISO", _ANSI_YELLOW),
+        ("✓", _ANSI_GREEN),
+    )
+    colored = row
+    for token, color in replacements:
+        colored = colored.replace(token, _style(token, color))
+    for marker in markers:
+        colored = colored.replace(marker, _style(marker, _ANSI_YELLOW))
     return colored
 
 
@@ -2192,6 +2177,37 @@ def _stream_is_terminal(stream: Any) -> bool:
 def _print_status(message: str) -> None:
     if sys.stdout is not None:
         print(f"{_style('[EAP]', _ANSI_CYAN)} {message}")
+
+
+def _print_error(message: str, *, pause: bool = False) -> None:
+    if sys.stderr is not None:
+        print(
+            _style(f"ERROR: {message}", _ANSI_RED, stream=sys.stderr),
+            file=sys.stderr,
+        )
+    if pause:
+        _pause_after_error()
+
+
+def _pause_after_error() -> None:
+    if not (
+        _stream_is_terminal(sys.stdin) and _stream_is_terminal(sys.stdout)
+    ):
+        return
+    print(
+        _style("Pulse una tecla para continuar...", _ANSI_YELLOW),
+        end="",
+        flush=True,
+    )
+    if msvcrt is None:  # pragma: no cover - EAP se ejecuta en Windows
+        input()
+        return
+    character = msvcrt.getwch()
+    if character in {"\x00", "\xe0"}:
+        msvcrt.getwch()
+    print()
+    if character == "\x03":
+        raise KeyboardInterrupt
 
 
 def _ensure_interactive_environment(app: EapApplication) -> str | None:
@@ -2631,7 +2647,9 @@ def _interactive_advanced_options(
                     [
                         "[1] Exportar todos los profiles",
                         "[2] Importar todos los profiles",
-                        "[3] Integraciones con el Host",
+                        "[3] Diagnóstico",
+                        "[4] Limpiar temporales",
+                        "[5] Integraciones con el Host",
                         "[0] Exportar EAP",
                         "[Esc] Volver",
                     ],
@@ -2645,6 +2663,12 @@ def _interactive_advanced_options(
             _interactive_export_tool(app)
             continue
         if option == "3":
+            _interactive_doctor(app)
+            continue
+        if option == "4":
+            _interactive_clean_temporary_storage(app)
+            continue
+        if option == "5":
             _interactive_host_integrations(app, current)
             continue
         if option == "1":
@@ -2837,7 +2861,7 @@ def _interactive_host_integration(
             )
             print("El contenido eliminado no es recuperable desde EAP.")
     except EapError as exc:
-        print(f"ERROR: {exc}")
+        _print_error(str(exc), pause=True)
 
 
 def _export_all_profiles(
@@ -2866,11 +2890,13 @@ def _print_batch_export_summary(
     for profile_id, result in exported:
         print(f"Exportado {profile_id}: {result.archive}")
     for profile_id, error in failures:
-        print(f"ERROR al exportar {profile_id}: {error}")
+        _print_error(f"al exportar {profile_id}: {error}")
     print(
         f"Exportación masiva terminada: {len(exported)} correctos · "
         f"{len(failures)} errores."
     )
+    if failures:
+        _pause_after_error()
 
 
 def _import_all_profiles(
@@ -2917,11 +2943,32 @@ def _print_batch_import_summary(
             f"{suffix}."
         )
     for archive_name, error in failures:
-        print(f"ERROR con {archive_name}: {error}")
+        _print_error(f"con {archive_name}: {error}")
     print(
         f"Importación masiva terminada: {len(imported)} importados · "
         f"{len(failures)} errores."
     )
+    if failures:
+        _pause_after_error()
+
+
+def _interactive_doctor(app: EapApplication) -> None:
+    checks = app.doctor()
+    _print_panel(
+        "Diagnóstico",
+        [
+            (
+                "",
+                [
+                    f"[{check['status'].upper()}] "
+                    f"{check['name']}: {check['detail']}"
+                    for check in checks
+                ],
+            ),
+            ("Continuar", ["Pulse Intro o Esc para volver"]),
+        ],
+    )
+    _read_input("> ")
 
 
 def _interactive_clean_temporary_storage(app: EapApplication) -> None:

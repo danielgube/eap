@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -637,7 +637,7 @@ def external_component(manifest_path: Path) -> ComponentDefinition:
                 "type": "application",
                 "workspaceMode": "environment",
                 "executable": "{{external.executable}}",
-                "arguments": [],
+                "arguments": ["--new-window", "{{workspace.selected}}"],
                 "startMode": "detached",
             }
         ],
@@ -1243,15 +1243,19 @@ class EnvironmentTests(unittest.TestCase):
                 "personalizado", settings.read_text(encoding="utf-8")
             )
 
-    def test_publishes_declared_core_tool_without_exposing_python_embed(
+    def test_publishes_declared_core_tools_without_exposing_python_embed(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = EapPaths.from_root(Path(temporary))
             paths.ensure_layout()
-            tool_root = paths.core / "7zip"
+            tool_root = paths.core / "tools" / "7zip"
             tool_root.mkdir(parents=True)
             (tool_root / "7z.exe").touch()
+            openssl_root = paths.core / "tools" / "openssl"
+            openssl_bin = openssl_root / "bin"
+            openssl_bin.mkdir(parents=True)
+            (openssl_bin / "openssl.exe").touch()
             atomic_write_json(
                 paths.core / "core_tools.json",
                 {
@@ -1260,8 +1264,15 @@ class EnvironmentTests(unittest.TestCase):
                         {
                             "id": "7zip",
                             "displayName": "7-Zip",
-                            "directory": "7zip",
+                            "directory": "tools/7zip",
                             "executables": ["7z.exe"],
+                            "publishToEnvironmentPath": True,
+                        },
+                        {
+                            "id": "openssl",
+                            "displayName": "OpenSSL",
+                            "directory": "tools/openssl",
+                            "executables": ["bin\\openssl.exe"],
                             "publishToEnvironmentPath": True,
                         }
                     ],
@@ -1274,13 +1285,51 @@ class EnvironmentTests(unittest.TestCase):
             )
             path_entries = environment["PATH"].split(os.pathsep)
             self.assertIn(str(tool_root.resolve()), path_entries)
+            self.assertIn(str(openssl_bin.resolve()), path_entries)
             self.assertEqual(
-                str(tool_root.resolve()), environment["EAP_CORE_TOOLS"]
+                os.pathsep.join(
+                    [str(tool_root.resolve()), str(openssl_bin.resolve())]
+                ),
+                environment["EAP_CORE_TOOLS"],
+            )
+            self.assertEqual(
+                (openssl_bin / "openssl.exe").resolve(),
+                CoreTools.load(paths)
+                .tool("openssl")
+                .executable("bin\\openssl.exe"),
             )
             self.assertNotIn(
-                str(paths.core / "python-embed").casefold(),
+                str(paths.core / "tools" / "python-embed").casefold(),
                 environment["PATH"].casefold(),
             )
+
+    def test_rejects_core_tool_executable_outside_its_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            tool_root = paths.core / "tools" / "safe"
+            tool_root.mkdir(parents=True)
+            escaped = tool_root.parent / "escaped.exe"
+            escaped.touch()
+            atomic_write_json(
+                paths.core / "core_tools.json",
+                {
+                    "schemaVersion": 1,
+                    "tools": [
+                        {
+                            "id": "safe",
+                            "displayName": "Safe",
+                            "directory": "tools/safe",
+                            "executables": ["..\\escaped.exe"],
+                            "publishToEnvironmentPath": True,
+                        }
+                    ],
+                },
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "sale de su directorio"
+            ):
+                CoreTools.load(paths)
 
     def test_inactive_components_do_not_hide_host_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1600,7 +1649,7 @@ class EnvironmentTests(unittest.TestCase):
                 "default", artifact, install_path, manifest_sha256="d" * 64
             )
             host_path = (
-                f"{paths.core / 'python-embed'}"
+                f"{paths.core / 'tools' / 'python-embed'}"
                 f"{os.pathsep}{paths.components / 'java' / 'corretto' / 'old'}"
                 f"{os.pathsep}C:\\Windows\\System32"
             )
@@ -1614,7 +1663,9 @@ class EnvironmentTests(unittest.TestCase):
                 "ProgramFiles": r"C:\Program Files",
                 "JAVA_HOME": r"C:\Host\Java",
                 "JAVA_TOOL_OPTIONS": "-Duser.home=C:\\Host",
-                "EAP_CORE_LEAK": str(paths.core / "python-embed"),
+                "EAP_CORE_LEAK": str(
+                    paths.core / "tools" / "python-embed"
+                ),
                 "EAP_BOOTSTRAP_HOST_USERPROFILE": r"C:\Users\host",
                 "EAP_BOOTSTRAP_HOST_APPDATA": (
                     r"C:\Users\host\AppData\Roaming"
@@ -1681,9 +1732,10 @@ class ManagedTerminalTests(unittest.TestCase):
     def _manager(self, root: Path) -> ManagedTerminal:
         paths = EapPaths.from_root(root)
         paths.ensure_layout()
-        (paths.core / "python-embed").mkdir(parents=True)
-        (paths.core / "python-embed" / "python.exe").touch()
-        terminal_root = paths.core / "windows-terminal"
+        python_root = paths.core / "tools" / "python-embed"
+        python_root.mkdir(parents=True)
+        (python_root / "python.exe").touch()
+        terminal_root = paths.core / "tools" / "windows-terminal"
         terminal_root.mkdir(parents=True)
         (terminal_root / "WindowsTerminal.exe").touch()
         (terminal_root / "wt.exe").touch()
@@ -1695,7 +1747,7 @@ class ManagedTerminalTests(unittest.TestCase):
                     {
                         "id": "windows-terminal",
                         "displayName": "Windows Terminal Portable",
-                        "directory": "windows-terminal",
+                        "directory": "tools/windows-terminal",
                         "executables": ["WindowsTerminal.exe", "wt.exe"],
                         "publishToEnvironmentPath": False,
                     }
@@ -1772,6 +1824,7 @@ class ManagedTerminalTests(unittest.TestCase):
             self.assertEqual(
                 str(
                     manager.paths.core
+                    / "tools"
                     / "windows-terminal"
                     / "WindowsTerminal.exe"
                 ),
@@ -2428,6 +2481,9 @@ class LauncherTests(unittest.TestCase):
             profile_home = paths.data / "profiles" / "default" / "home"
             self.assertEqual(executable.resolve(), launcher.executable)
             self.assertEqual(workspace, launcher.working_directory)
+            self.assertEqual(
+                ("--new-window", str(workspace)), launcher.arguments
+            )
             self.assertEqual("default", launcher.environment["EAP_ENV"])
             self.assertEqual(
                 str(workspace), launcher.environment["EAP_WORKSPACE"]
@@ -2442,7 +2498,8 @@ class LauncherTests(unittest.TestCase):
             ) as popen:
                 self.assertEqual(4321, app.launch("default", "kiro"))
             self.assertEqual(
-                [str(executable.resolve())], popen.call_args.args[0]
+                [str(executable.resolve()), "--new-window", str(workspace)],
+                popen.call_args.args[0],
             )
             self.assertEqual(workspace, popen.call_args.kwargs["cwd"])
             self.assertEqual(
@@ -2678,7 +2735,9 @@ class ShortcutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = EapPaths.from_root(Path(temporary))
             paths.ensure_layout()
-            pythonw = paths.core / "python-embed" / "pythonw.exe"
+            pythonw = (
+                paths.core / "tools" / "python-embed" / "pythonw.exe"
+            )
             pythonw.parent.mkdir(parents=True)
             pythonw.touch()
             icon = paths.components / "dbeaver" / "dbeaver.ico"
@@ -2750,10 +2809,16 @@ class TransferTests(unittest.TestCase):
         self.paths = EapPaths.from_root(Path(self.temporary.name))
         self.paths.ensure_layout()
         source_core = Path(__file__).resolve().parents[1]
-        tool_root = self.paths.core / "7zip"
+        tool_root = self.paths.core / "tools" / "7zip"
         tool_root.mkdir(parents=True)
-        shutil.copy2(source_core / "7zip" / "7z.exe", tool_root / "7z.exe")
-        shutil.copy2(source_core / "7zip" / "7z.dll", tool_root / "7z.dll")
+        shutil.copy2(
+            source_core / "tools" / "7zip" / "7z.exe",
+            tool_root / "7z.exe",
+        )
+        shutil.copy2(
+            source_core / "tools" / "7zip" / "7z.dll",
+            tool_root / "7z.dll",
+        )
         atomic_write_json(
             self.paths.core / "core_tools.json",
             {
@@ -2762,7 +2827,7 @@ class TransferTests(unittest.TestCase):
                     {
                         "id": "7zip",
                         "displayName": "7-Zip",
-                        "directory": "7zip",
+                        "directory": "tools/7zip",
                         "executables": ["7z.exe"],
                         "publishToEnvironmentPath": True,
                     }
@@ -3393,6 +3458,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("\x1b[1;36m", rendered)
         self.assertIn("\x1b[32mOK\x1b[0m", rendered)
         self.assertIn("\x1b[31mKO\x1b[0m", rendered)
+        self.assertIn("\x1b[33m[1]\x1b[0m", rendered)
         visible = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
         self.assertTrue(
             all(len(line) == 60 for line in visible.splitlines() if line)
@@ -3401,11 +3467,11 @@ class InterfaceTests(unittest.TestCase):
     def test_color_does_not_change_nested_card_layout(self) -> None:
         cards = [
             [
-                "Java JDK · 21",
+                "[1] Java JDK · 21",
                 "Proveedor: Eclipse Temurin",
                 "Estado: OK",
             ],
-            ["Node.js · 24", "Proveedor: Node.js Foundation"],
+            ["[2] Node.js · 24", "Proveedor: Node.js Foundation"],
         ]
 
         def render(color_enabled: bool) -> str:
@@ -3432,6 +3498,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn("…", visible)
         self.assertIn("Java JDK · 21", visible)
         self.assertIn("Node.js · 24", visible)
+        self.assertIn("\x1b[33m[1]\x1b[36m", colored)
+        self.assertIn("\x1b[33m[2]\x1b[36m", colored)
 
     def test_panel_color_is_suppressed_when_output_is_redirected(self) -> None:
         output = StringIO()
@@ -3554,21 +3622,62 @@ class InterfaceTests(unittest.TestCase):
                 (paths.data / "profiles" / "developer").is_dir()
             )
 
-    def test_advanced_menu_contains_bulk_profile_operations(self) -> None:
+    def test_advanced_menu_contains_and_routes_maintenance_actions(self) -> None:
         output = StringIO()
         with (
-            patch.object(cli_module, "_read_input", return_value="\x1b"),
+            patch.object(
+                cli_module,
+                "_read_input",
+                side_effect=["3", "4", "5", "\x1b"],
+            ),
+            patch.object(cli_module, "_interactive_doctor") as doctor,
+            patch.object(
+                cli_module, "_interactive_clean_temporary_storage"
+            ) as clean,
+            patch.object(
+                cli_module, "_interactive_host_integrations"
+            ) as integrations,
             redirect_stdout(output),
         ):
             selected = cli_module._interactive_advanced_options(
                 SimpleNamespace(), "default"
             )
         self.assertEqual("default", selected)
+        doctor.assert_called_once()
+        clean.assert_called_once()
+        integrations.assert_called_once_with(unittest.mock.ANY, "default")
         rendered = output.getvalue()
         self.assertIn("[1] Exportar todos los profiles", rendered)
         self.assertIn("[2] Importar todos los profiles", rendered)
-        self.assertIn("[3] Integraciones con el Host", rendered)
+        self.assertIn("[3] Diagnóstico", rendered)
+        self.assertIn("[4] Limpiar temporales", rendered)
+        self.assertIn("[5] Integraciones con el Host", rendered)
         self.assertIn("[0] Exportar EAP", rendered)
+
+    def test_interactive_error_is_red_and_waits_for_one_key(self) -> None:
+        output = TtyStringIO()
+        error_output = TtyStringIO()
+        pressed: list[str] = []
+        keyboard = SimpleNamespace(
+            getwch=lambda: pressed.append("x") or "x"
+        )
+        with (
+            patch.object(cli_module, "_COLOR_ENABLED", True),
+            patch.object(cli_module, "msvcrt", keyboard),
+            patch.object(cli_module.sys, "stdin", TtyStringIO()),
+            redirect_stdout(output),
+            redirect_stderr(error_output),
+        ):
+            cli_module._print_error(
+                "No se pudo eliminar el temporal", pause=True
+            )
+
+        self.assertEqual(["x"], pressed)
+        self.assertIn(
+            "\x1b[31mERROR: No se pudo eliminar el temporal\x1b[0m",
+            error_output.getvalue(),
+        )
+        self.assertIn("Pulse una tecla para continuar...", output.getvalue())
 
     def test_bulk_export_uses_default_options_and_continues_on_error(self) -> None:
         calls: list[tuple[str, str, bool, bool]] = []
@@ -4460,8 +4569,8 @@ class InterfaceTests(unittest.TestCase):
             )
             self.assertIn("[1] Catálogo de componentes", rendered)
             self.assertIn("[2] Gestionar profile", rendered)
-            self.assertIn("[3] Diagnóstico", rendered)
-            self.assertIn("[4] Limpiar temporales", rendered)
+            self.assertNotIn("[3] Diagnóstico", rendered)
+            self.assertNotIn("[4] Limpiar temporales", rendered)
             self.assertIn("Temporales: 1.5 KiB · 2 archivo(s)", rendered)
             self.assertNotIn("Abrir CMD del entorno", rendered)
             self.assertNotIn("Aplicaciones arrancables", rendered)

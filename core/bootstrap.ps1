@@ -410,6 +410,8 @@ function Install-CoreTool {
             $hasBackup = $true
         }
         try {
+            $targetParent = Split-Path -Parent $Target
+            New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
             Move-Item -LiteralPath $payload -Destination $Target
         }
         catch {
@@ -421,7 +423,8 @@ function Install-CoreTool {
         if ($hasBackup) {
             Remove-Item -LiteralPath $backup -Recurse -Force
         }
-        Write-Host "EAP: $($Tool.displayName) listo en core\$($Tool.directory)."
+        $displayDirectory = ([string]$Tool.directory).Replace('/', '\')
+        Write-Host "EAP: $($Tool.displayName) listo en core\$displayDirectory."
     }
     finally {
         Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue

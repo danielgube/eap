@@ -16,10 +16,10 @@ if not exist "%~dp0core\bootstrap.ps1" (
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0core\bootstrap.ps1"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-if not exist "%~dp0core\python-embed\python.exe" (
+if not exist "%~dp0core\tools\python-embed\python.exe" (
     echo ERROR: El bootstrap no ha creado el runtime privado de EAP.
     exit /b 2
 )
 
-"%~dp0core\python-embed\python.exe" -B -I -X utf8 -m eap %*
+"%~dp0core\tools\python-embed\python.exe" -B -I -X utf8 -m eap %*
 exit /b %ERRORLEVEL%
