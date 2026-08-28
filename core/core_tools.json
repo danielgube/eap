@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "id": "7zip",
+      "displayName": "7-Zip",
+      "directory": "7zip",
+      "executables": [
+        "7z.exe"
+      ],
+      "publishToEnvironmentPath": true,
+      "version": "26.02",
+      "bootstrap": {
+        "requiredFiles": [
+          "7z.exe",
+          "7z.dll"
+        ],
+        "artifacts": [
+          {
+            "fileName": "7zr.exe",
+            "url": "https://github.com/ip7z/7zip/releases/download/26.02/7zr.exe",
+            "sha256": "56b8cc9f4971cef253644fafe54063ed7fdca551d4dee0f8c6baa81b855acd72",
+            "install": {
+              "type": "file",
+              "destination": ".",
+              "target": "7zr.exe"
+            }
+          },
+          {
+            "fileName": "7z2602-x64.exe",
+            "url": "https://github.com/ip7z/7zip/releases/download/26.02/7z2602-x64.exe",
+            "sha256": "6745fa76dc2ea031596d8678f6f6b99c3c1b435b4164a63485adbbc7b8d82ef0",
+            "install": {
+              "type": "sevenZip",
+              "destination": ".",
+              "executable": "7zr.exe"
+            }
+          }
+        ],
+        "validation": [
+          {
+            "type": "command",
+            "path": "7z.exe",
+            "arguments": [
+              "i"
+            ],
+            "expectContains": "7-Zip 26.02"
+          }
+        ]
+      }
+    },
+    {
+      "id": "python-embed",
+      "displayName": "CPython Embedded con Pillow",
+      "directory": "python-embed",
+      "executables": [
+        "python.exe",
+        "pythonw.exe"
+      ],
+      "publishToEnvironmentPath": false,
+      "version": "3.14.7+pillow-12.3.0",
+      "bootstrap": {
+        "requiredFiles": [
+          "python.exe",
+          "pythonw.exe",
+          "python314._pth",
+          "PIL\\__init__.py"
+        ],
+        "artifacts": [
+          {
+            "fileName": "python-3.14.7-embed-amd64.zip",
+            "url": "https://www.python.org/ftp/python/3.14.7/python-3.14.7-embed-amd64.zip",
+            "sha256": "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15",
+            "install": {
+              "type": "zip",
+              "destination": "."
+            }
+          },
+          {
+            "fileName": "pillow-12.3.0-cp314-cp314-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/f1/e0/492879f69d94f91f60fc8cd05ba03650e9520afebb2fb7aa12777d7c7f38/pillow-12.3.0-cp314-cp314-win_amd64.whl",
+            "sha256": "fdafc9cce40277e0f7a0feabce0ee50dd2fa1800f3b38015e51296b5e814048d",
+            "install": {
+              "type": "zip",
+              "destination": "."
+            }
+          }
+        ],
+        "postInstall": {
+          "type": "pythonPath",
+          "path": "python314._pth",
+          "entries": [
+            "python314.zip",
+            ".",
+            "..\\app"
+          ]
+        },
+        "validation": [
+          {
+            "type": "command",
+            "path": "python.exe",
+            "arguments": [
+              "-B",
+              "-I",
+              "-X",
+              "utf8",
+              "-c",
+              "import PIL, sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}|{PIL.__version__}')"
+            ],
+            "expectContains": "3.14.7|12.3.0"
+          }
+        ]
+      }
+    },
+    {
+      "id": "eap-commands",
+      "displayName": "Comandos EAP",
+      "directory": "commands",
+      "executables": [
+        "eap.cmd"
+      ],
+      "publishToEnvironmentPath": true
+    },
+    {
+      "id": "windows-terminal",
+      "displayName": "Windows Terminal Portable",
+      "directory": "windows-terminal",
+      "executables": [
+        "WindowsTerminal.exe",
+        "wt.exe"
+      ],
+      "publishToEnvironmentPath": false,
+      "version": "1.24.11911.0",
+      "bootstrap": {
+        "requiredFiles": [
+          "WindowsTerminal.exe",
+          "wt.exe"
+        ],
+        "artifacts": [
+          {
+            "fileName": "Microsoft.WindowsTerminal_1.24.11911.0_x64.zip",
+            "url": "https://github.com/microsoft/terminal/releases/download/v1.24.11911.0/Microsoft.WindowsTerminal_1.24.11911.0_x64.zip",
+            "sha256": "7691efeb71c8dd0b95536c84e366fa4cf809a42c534912f9cefa1056534383bd",
+            "install": {
+              "type": "zip",
+              "destination": ".",
+              "source": "terminal-1.24.11911.0"
+            }
+          }
+        ],
+        "validation": [
+          {
+            "type": "fileVersion",
+            "path": "WindowsTerminal.exe",
+            "expect": "1.24.260710001"
+          }
+        ]
+      }
+    }
+  ]
+}

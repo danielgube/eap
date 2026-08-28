@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "nodejs",
+  "displayName": "Node.js",
+  "description": "Runtime JavaScript y herramientas npm oficiales para Windows",
+  "category": "runtimes",
+  "kind": "runtime",
+  "launchers": [],
+  "capability": {
+    "id": "runtime.nodejs",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": 22,
+      "displayName": "Node.js 22 LTS · Jod"
+    },
+    {
+      "id": 24,
+      "displayName": "Node.js 24 LTS · Krypton"
+    },
+    {
+      "id": 26,
+      "displayName": "Node.js 26 Current"
+    }
+  ],
+  "defaultProvider": "nodejs",
+  "defaultTrack": 24,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "nodejs",
+      "componentId": "nodejs-official",
+      "displayName": "Node.js Foundation",
+      "vendor": "OpenJS Foundation",
+      "license": "MIT",
+      "homepage": "https://nodejs.org/",
+      "resolver": {
+        "type": "nodejs-index",
+        "indexUrl": "https://nodejs.org/dist/index.json",
+        "downloadBaseUrl": "https://nodejs.org/dist"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "checksumFile": "SHASUMS256.txt"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "nodejs/{provider}/{version}",
+    "stripSingleRoot": true,
+    "requiredFiles": [
+      "node.exe",
+      "npm.cmd",
+      "npx.cmd"
+    ],
+    "validation": {
+      "type": "command",
+      "command": [
+        "node.exe",
+        "--version"
+      ],
+      "expectContains": "v",
+      "timeoutSeconds": 30
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{profile.home}}/.npm",
+        "displayName": "Caché npm",
+        "role": "cache",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{profile.home}}/.npm-global",
+        "displayName": "Paquetes npm globales",
+        "role": "repository",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{profile.home}}/.cache/node/corepack",
+        "displayName": "Caché Corepack",
+        "role": "cache",
+        "showInDashboard": false
+      }
+    ],
+    "files": [
+      {
+        "path": "{{profile.home}}/.npmrc",
+        "displayName": "Configuración npm",
+        "role": "configuration",
+        "showInDashboard": false,
+        "mode": "if-missing",
+        "content": ""
+      }
+    ]
+  },
+  "environment": {
+    "variables": {
+      "NODE_HOME": "{{component.root}}",
+      "NPM_CONFIG_CACHE": "{{profile.home}}/.npm",
+      "NPM_CONFIG_PREFIX": "{{profile.home}}/.npm-global",
+      "NPM_CONFIG_USERCONFIG": "{{profile.home}}/.npmrc",
+      "NODE_REPL_HISTORY": "{{profile.home}}/.node_repl_history",
+      "COREPACK_HOME": "{{profile.home}}/.cache/node/corepack"
+    },
+    "path": [
+      "{{component.root}}"
+    ],
+    "dataPath": [
+      "{{profile.home}}/.npm-global"
+    ]
+  }
+}

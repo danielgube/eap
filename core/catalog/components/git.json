@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "id": "git",
+  "displayName": "Git",
+  "description": "Git for Windows en distribución MinGit ZIP",
+  "category": "version-control",
+  "kind": "tool",
+  "launchers": [],
+  "capability": {
+    "id": "tool.git",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": 2,
+      "displayName": "Git 2 estable"
+    }
+  ],
+  "defaultProvider": "git-for-windows",
+  "defaultTrack": 2,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "git-for-windows",
+      "componentId": "git-for-windows-mingit",
+      "displayName": "Git for Windows · MinGit ZIP",
+      "vendor": "Git for Windows",
+      "license": "GPL-2.0-only",
+      "homepage": "https://gitforwindows.org/",
+      "resolver": {
+        "type": "github-release-asset",
+        "apiUrl": "https://api.github.com/repos/git-for-windows/git/releases/latest",
+        "assetPattern": "^MinGit-(?P<version>\\d+\\.\\d+\\.\\d+\\.\\d+)-64-bit\\.zip$"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "distribution": "MinGit"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "git/{provider}/{version}",
+    "stripSingleRoot": false,
+    "requiredFiles": [
+      "cmd/git.exe",
+      "mingw64/bin/git.exe"
+    ],
+    "validation": {
+      "type": "command",
+      "command": [
+        "cmd/git.exe",
+        "--version"
+      ],
+      "expectContains": "git version",
+      "timeoutSeconds": 30
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{profile.home}}/.ssh",
+        "displayName": "Claves SSH",
+        "role": "configuration",
+        "showInDashboard": true
+      }
+    ],
+    "files": [
+      {
+        "path": "{{profile.home}}/.gitconfig",
+        "displayName": "Configuración Git",
+        "role": "configuration",
+        "showInDashboard": true,
+        "mode": "if-missing",
+        "content": ""
+      }
+    ]
+  },
+  "environment": {
+    "variables": {
+      "GIT_HOME": "{{component.root}}",
+      "GIT_CONFIG_GLOBAL": "{{profile.home}}/.gitconfig"
+    },
+    "path": [
+      "{{component.root}}/cmd"
+    ]
+  }
+}

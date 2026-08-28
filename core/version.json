@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "EAP",
+  "version": "0.19.0",
+  "engine": {
+    "name": "CPython Embedded",
+    "version": "3.14.7",
+    "architecture": "x64"
+  },
+  "libraries": {
+    "pillow": {
+      "version": "12.3.0",
+      "purpose": "Composición de iconos EAP para accesos directos"
+    }
+  },
+  "terminal": {
+    "name": "Windows Terminal Portable",
+    "version": "1.24.11911.0",
+    "architecture": "x64"
+  }
+}

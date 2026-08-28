@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "id": "firefox",
+      "displayName": "Firefox",
+      "description": "Compartir con EAP el perfil persistente de Firefox del host",
+      "processes": [
+        "firefox.exe"
+      ],
+      "links": [
+        {
+          "kind": "junction",
+          "sourceRoot": "host.roamingAppData",
+          "source": "Mozilla/Firefox",
+          "destinationRoot": "profile.roamingAppData",
+          "destination": "Mozilla/Firefox",
+          "requiredPaths": [
+            "profiles.ini"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "id": "maven",
+  "displayName": "Apache Maven",
+  "description": "Herramienta de construcción y gestión de dependencias para Java",
+  "category": "build-tools",
+  "kind": "tool",
+  "launchers": [],
+  "capability": {
+    "id": "tool.maven",
+    "exclusive": true
+  },
+  "requires": [
+    {
+      "capability": "runtime.java",
+      "minimumTrack": 8
+    }
+  ],
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": 3,
+      "displayName": "Maven 3 estable"
+    }
+  ],
+  "defaultProvider": "apache",
+  "defaultTrack": 3,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "apache",
+      "componentId": "apache-maven",
+      "displayName": "Apache Software Foundation",
+      "vendor": "Apache Software Foundation",
+      "license": "Apache-2.0",
+      "homepage": "https://maven.apache.org/",
+      "resolver": {
+        "type": "apache-directory",
+        "indexUrl": "https://downloads.apache.org/maven/maven-3/",
+        "downloadBaseUrl": "https://downloads.apache.org/maven/maven-3"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha512"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "maven/{provider}/{version}",
+    "stripSingleRoot": true,
+    "requiredFiles": [
+      "bin/mvn.cmd",
+      "bin/mvnDebug.cmd",
+      "conf/settings.xml"
+    ],
+    "validation": {
+      "type": "command",
+      "command": [
+        "bin/mvn.cmd",
+        "--version"
+      ],
+      "expectContains": "Apache Maven",
+      "timeoutSeconds": 30
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{profile.home}}/.m2",
+        "displayName": "Configuración Maven",
+        "role": "configuration",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{profile.home}}/.m2/repository",
+        "displayName": "Repositorio local",
+        "role": "repository",
+        "showInDashboard": false
+      }
+    ],
+    "files": [
+      {
+        "path": "{{profile.home}}/.m2/settings.xml",
+        "displayName": "settings.xml",
+        "role": "configuration",
+        "showInDashboard": false,
+        "mode": "if-missing",
+        "content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<settings xmlns=\"http://maven.apache.org/SETTINGS/1.2.0\"\n          xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n          xsi:schemaLocation=\"http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd\">\n  <localRepository>${user.home}/.m2/repository</localRepository>\n</settings>\n"
+      }
+    ]
+  },
+  "environment": {
+    "variables": {
+      "MAVEN_HOME": "{{component.root}}"
+    },
+    "path": [
+      "{{component.root}}/bin"
+    ]
+  }
+}

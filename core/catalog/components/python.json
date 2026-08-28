@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "id": "python",
+  "displayName": "Python",
+  "description": "Runtime CPython completo con pip y venv para Windows",
+  "category": "runtimes",
+  "kind": "runtime",
+  "launchers": [],
+  "capability": {
+    "id": "runtime.python",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": "3.12",
+      "displayName": "Python 3.12"
+    },
+    {
+      "id": "3.13",
+      "displayName": "Python 3.13"
+    },
+    {
+      "id": "3.14",
+      "displayName": "Python 3.14"
+    }
+  ],
+  "defaultProvider": "pythoncore",
+  "defaultTrack": "3.14",
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "pythoncore",
+      "componentId": "pythoncore-official",
+      "displayName": "CPython oficial · PythonCore",
+      "vendor": "Python Software Foundation",
+      "license": "PSF-2.0",
+      "homepage": "https://www.python.org/",
+      "resolver": {
+        "type": "python-install-manager-index",
+        "indexUrl": "https://www.python.org/ftp/python/index-windows.json",
+        "company": "PythonCore",
+        "architectureTag": "64"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "source": "Python Install Manager index"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "python/{provider}/{version}",
+    "stripSingleRoot": false,
+    "requiredFiles": [
+      "python.exe",
+      "pythonw.exe",
+      "Lib/venv/__init__.py",
+      "Lib/ensurepip/__init__.py",
+      "Lib/site-packages/pip/__init__.py"
+    ],
+    "validation": {
+      "type": "command",
+      "command": [
+        "python.exe",
+        "--version"
+      ],
+      "expectContains": "Python",
+      "timeoutSeconds": 30
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{profile.home}}/.python/Scripts",
+        "displayName": "Paquetes de usuario Python",
+        "role": "repository",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{profile.home}}/.cache/pip",
+        "displayName": "Caché pip",
+        "role": "cache",
+        "showInDashboard": false
+      },
+      {
+        "path": "{{profile.home}}/pip",
+        "displayName": "Configuración pip",
+        "role": "configuration",
+        "showInDashboard": true
+      }
+    ],
+    "files": [
+      {
+        "path": "{{profile.home}}/pip/pip.ini",
+        "displayName": "pip.ini",
+        "role": "configuration",
+        "showInDashboard": false,
+        "mode": "if-missing",
+        "content": "[global]\n"
+      }
+    ]
+  },
+  "environment": {
+    "variables": {
+      "PYTHONUSERBASE": "{{profile.home}}/.python",
+      "PYTHON_HISTORY": "{{profile.home}}/.python_history",
+      "PIP_USER": "1",
+      "PIP_CACHE_DIR": "{{profile.home}}/.cache/pip",
+      "PIP_CONFIG_FILE": "{{profile.home}}/pip/pip.ini",
+      "PIP_DISABLE_PIP_VERSION_CHECK": "1"
+    },
+    "unset": [
+      "PYTHONHOME",
+      "PYTHONPATH",
+      "VIRTUAL_ENV",
+      "PIP_PREFIX",
+      "PIP_TARGET"
+    ],
+    "path": [
+      "{{component.root}}"
+    ],
+    "commands": [
+      {
+        "name": "pip",
+        "executable": "{{component.root}}/python.exe",
+        "arguments": [
+          "-m",
+          "pip"
+        ]
+      }
+    ],
+    "dataPath": [
+      "{{profile.home}}/.python/Scripts"
+    ]
+  }
+}

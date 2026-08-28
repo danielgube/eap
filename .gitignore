@@ -1,0 +1,40 @@
+# Estado mutable y privado de EAP
+/config.properties
+/components/
+/data/
+/envs/
+/exports/
+/temp/
+/workspaces/
+
+# core contiene codigo versionado y payloads reconstruibles. Se ignora todo
+# por defecto y se permite explicitamente solo la infraestructura mantenida.
+/core/*
+!/core/app/
+!/core/app/**
+!/core/bootstrap.ps1
+!/core/catalog/
+!/core/catalog/**
+!/core/commands/
+!/core/commands/**
+!/core/core_tools.json
+!/core/tests/
+!/core/tests/**
+!/core/version.json
+
+# Artefactos generados por Python y herramientas de desarrollo
+__pycache__/
+*.py[cod]
+*.pyo
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Archivos locales de Windows y editores
+Thumbs.db
+Desktop.ini
+*.lnk
+*.log
+.idea/
+.vscode/

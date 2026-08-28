@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "id": "java",
+  "displayName": "Java JDK",
+  "description": "Distribuciones OpenJDK portables para Windows",
+  "category": "runtimes",
+  "kind": "runtime",
+  "launchers": [],
+  "capability": {
+    "id": "runtime.java",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+	{
+      "id": 11,
+      "displayName": "Java 11 LTS"
+    },
+    {
+      "id": 17,
+      "displayName": "Java 17 LTS"
+    },
+    {
+      "id": 21,
+      "displayName": "Java 21 LTS"
+    },
+    {
+      "id": 25,
+      "displayName": "Java 25 LTS"
+    }
+  ],
+  "defaultProvider": "temurin",
+  "defaultTrack": 21,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "temurin",
+      "componentId": "java-temurin",
+      "displayName": "Eclipse Temurin",
+      "vendor": "Eclipse Adoptium",
+      "license": "GPL-2.0-only WITH Classpath-exception-2.0",
+      "homepage": "https://adoptium.net/temurin/",
+      "resolver": {
+        "type": "adoptium-v3",
+        "baseUrl": "https://api.adoptium.net/v3",
+        "vendor": "eclipse",
+        "jvmImpl": "hotspot"
+      },
+      "verification": {
+        "implementorContains": "Eclipse Adoptium"
+      }
+    },
+    {
+      "id": "corretto",
+      "componentId": "java-corretto",
+      "displayName": "Amazon Corretto",
+      "vendor": "Amazon",
+      "license": "GPL-2.0-only WITH Classpath-exception-2.0",
+      "homepage": "https://aws.amazon.com/corretto/",
+      "resolver": {
+        "type": "corretto-index",
+        "indexUrl": "https://corretto.github.io/corretto-downloads/latest_links/indexmap_with_checksum.json",
+        "resourceBaseUrl": "https://corretto.aws"
+      },
+      "verification": {
+        "implementorContains": "Amazon.com"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "java/{provider}/{version}",
+    "stripSingleRoot": true,
+    "requiredFiles": [
+      "bin/java.exe",
+      "bin/javac.exe",
+      "release"
+    ],
+    "validation": {
+      "type": "java-release"
+    }
+  },
+  "environment": {
+    "variables": {
+      "JAVA_HOME": "{{component.root}}",
+      "JAVA_TOOL_OPTIONS": "-Duser.home=\"{{profile.home}}\" -Djava.io.tmpdir=\"{{profile.temp}}\""
+    },
+    "path": [
+      "{{component.root}}/bin"
+    ]
+  }
+}

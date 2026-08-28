@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "id": "vscode",
+  "displayName": "Visual Studio Code",
+  "description": "Editor de Microsoft ligado al workspace del entorno",
+  "category": "applications",
+  "kind": "application",
+  "launchers": [
+    {
+      "id": "vscode",
+      "displayName": "Visual Studio Code",
+      "type": "application",
+      "workspaceMode": "environment",
+      "executable": "{{component.root}}/Code.exe",
+      "arguments": [
+        "--user-data-dir",
+        "{{data.component}}\\user-data",
+        "--extensions-dir",
+        "{{data.component}}\\extensions",
+        "--disable-updates",
+        "--new-window",
+        "{{workspace.selected}}"
+      ],
+      "environment": {
+        "EAP_COMPONENT_DATA": "{{data.component}}",
+        "EAP_WORKSPACE": "{{workspace.selected}}"
+      },
+      "dataDirectories": [
+        "{{data.component}}\\user-data",
+        "{{data.component}}\\extensions"
+      ],
+      "startMode": "detached"
+    }
+  ],
+  "capability": {
+    "id": "app.ide.vscode",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": 1,
+      "displayName": "VS Code 1.x estable"
+    }
+  ],
+  "defaultProvider": "microsoft",
+  "defaultTrack": 1,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "microsoft",
+      "componentId": "vscode-microsoft",
+      "displayName": "Microsoft",
+      "vendor": "Microsoft",
+      "license": "Microsoft Software License Terms",
+      "homepage": "https://code.visualstudio.com/",
+      "resolver": {
+        "type": "vscode-update-api",
+        "updateUrl": "https://update.code.visualstudio.com/api/update/win32-x64-archive/stable/latest"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "source": "Microsoft Visual Studio Code Update API"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "vscode/{provider}/{version}",
+    "stripSingleRoot": false,
+    "requiredFiles": [
+      "Code.exe",
+      "bin/code.cmd",
+      "Code.VisualElementsManifest.xml"
+    ],
+    "validation": {
+      "type": "files-only"
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{data.component}}/user-data",
+        "displayName": "Configuración VS Code",
+        "role": "configuration",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{data.component}}/extensions",
+        "displayName": "Extensiones VS Code",
+        "role": "extensions",
+        "showInDashboard": true
+      }
+    ],
+    "files": []
+  },
+  "environment": {
+    "variables": {
+      "VSCODE_HOME": "{{component.root}}"
+    },
+    "path": [
+      "{{component.root}}/bin"
+    ]
+  }
+}

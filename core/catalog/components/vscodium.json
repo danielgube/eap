@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "id": "vscodium",
+  "displayName": "VSCodium",
+  "description": "Build comunitaria open source de VS Code sin telemetría de Microsoft",
+  "category": "applications",
+  "kind": "application",
+  "launchers": [
+    {
+      "id": "vscodium",
+      "displayName": "VSCodium",
+      "type": "application",
+      "workspaceMode": "environment",
+      "executable": "{{component.root}}/VSCodium.exe",
+      "arguments": [
+        "--user-data-dir",
+        "{{data.component}}\\user-data",
+        "--extensions-dir",
+        "{{data.component}}\\extensions",
+        "--disable-updates",
+        "--new-window",
+        "{{workspace.selected}}"
+      ],
+      "environment": {
+        "EAP_COMPONENT_DATA": "{{data.component}}",
+        "EAP_WORKSPACE": "{{workspace.selected}}"
+      },
+      "dataDirectories": [
+        "{{data.component}}\\user-data",
+        "{{data.component}}\\extensions"
+      ],
+      "startMode": "detached"
+    }
+  ],
+  "capability": {
+    "id": "app.ide.vscode",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": 1,
+      "displayName": "VSCodium 1.x estable"
+    }
+  ],
+  "defaultProvider": "community",
+  "defaultTrack": 1,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "community",
+      "componentId": "vscodium-community",
+      "displayName": "VSCodium Community",
+      "vendor": "VSCodium",
+      "license": "MIT",
+      "homepage": "https://vscodium.com/",
+      "resolver": {
+        "type": "github-release-asset",
+        "apiUrl": "https://api.github.com/repos/VSCodium/vscodium/releases?per_page=5",
+        "assetPattern": "^VSCodium-win32-x64-(?P<version>\\d+\\.\\d+\\.\\d+)\\.zip$"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "source": "GitHub release asset digest"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "vscodium/{provider}/{version}",
+    "stripSingleRoot": false,
+    "requiredFiles": [
+      "VSCodium.exe",
+      "bin/codium.cmd",
+      "resources/app/product.json"
+    ],
+    "validation": {
+      "type": "files-only"
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{data.component}}/user-data",
+        "displayName": "Configuración VSCodium",
+        "role": "configuration",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{data.component}}/extensions",
+        "displayName": "Extensiones VSCodium",
+        "role": "extensions",
+        "showInDashboard": true
+      }
+    ],
+    "files": []
+  },
+  "environment": {
+    "variables": {
+      "VSCODIUM_HOME": "{{component.root}}"
+    },
+    "path": [
+      "{{component.root}}/bin"
+    ]
+  }
+}

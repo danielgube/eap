@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "id": "dbeaver",
+  "displayName": "DBeaver Community",
+  "description": "Cliente universal de bases de datos, portable y de código abierto",
+  "category": "applications",
+  "kind": "application",
+  "launchers": [
+    {
+      "id": "dbeaver",
+      "displayName": "DBeaver Community",
+      "type": "application",
+      "workspaceMode": "component-data",
+      "executable": "{{component.root}}/dbeaver.exe",
+      "arguments": [
+        "-configuration",
+        "{{data.component.uri}}/runtime/{{component.version}}/configuration",
+        "-data",
+        "{{workspace.selected}}"
+      ],
+      "environment": {
+        "EAP_COMPONENT_DATA": "{{data.component}}",
+        "EAP_WORKSPACE": "{{workspace.selected}}"
+      },
+      "unset": [
+        "CLASSPATH",
+        "JDK_JAVA_OPTIONS"
+      ],
+      "dataCopies": [
+        {
+          "source": "{{component.root}}/configuration",
+          "target": "{{data.component}}/runtime/{{component.version}}/configuration",
+          "mode": "if-missing"
+        },
+        {
+          "source": "{{component.root}}/p2",
+          "target": "{{data.component}}/runtime/{{component.version}}/p2",
+          "mode": "if-missing"
+        }
+      ],
+      "startMode": "detached"
+    }
+  ],
+  "capability": {
+    "id": "app.database-client",
+    "exclusive": false
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": "26.1",
+      "displayName": "DBeaver 26.1 estable"
+    }
+  ],
+  "defaultProvider": "community",
+  "defaultTrack": "26.1",
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "community",
+      "componentId": "dbeaver-community",
+      "displayName": "DBeaver Community",
+      "vendor": "DBeaver Corp",
+      "license": "Apache-2.0",
+      "homepage": "https://dbeaver.io/",
+      "resolver": {
+        "type": "github-release-asset",
+        "apiUrl": "https://api.github.com/repos/dbeaver/dbeaver/releases?per_page=100",
+        "assetPattern": "^dbeaver-ce-(?P<version>\\d+\\.\\d+\\.\\d+)-windows-x86_64\\.zip$"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "distribution": "DBeaver Community ZIP"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "dbeaver/{provider}/{version}",
+    "stripSingleRoot": true,
+    "requiredFiles": [
+      "dbeaver.exe",
+      "dbeaverc.exe",
+      "dbeaver.ini",
+      "configuration/config.ini",
+      "configuration/org.eclipse.equinox.simpleconfigurator/bundles.info",
+      "p2/org.eclipse.equinox.p2.engine/profileRegistry/DefaultProfile.profile/.lock",
+      "jre/bin/javaw.exe"
+    ],
+    "validation": {
+      "type": "files-only"
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{data.component}}",
+        "displayName": "Datos privados",
+        "role": "data",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{data.component}}/workspace",
+        "displayName": "Workspace auxiliar",
+        "role": "workspace",
+        "showInDashboard": true
+      }
+    ],
+    "files": []
+  },
+  "environment": {
+    "variables": {},
+    "path": []
+  }
+}
