@@ -113,6 +113,7 @@ Comandos útiles:
     eap.cmd component uninstall git --profile desarrollo
     eap.cmd component install nodejs --track 24 --profile desarrollo
     eap.cmd component install python --track 3.14 --profile desarrollo
+    eap.cmd component install bruno --track 4 --profile desarrollo
     eap.cmd component install dbeaver --track 26.1 --profile desarrollo
     eap.cmd component install vscode --profile desarrollo
     eap.cmd component install vscodium --profile desarrollo
@@ -129,6 +130,7 @@ Comandos útiles:
     eap.cmd terminal start --profile desarrollo
     eap.cmd shell --profile desarrollo --type cmd
     eap.cmd launch --profile desarrollo
+    eap.cmd launch bruno --profile desarrollo
     eap.cmd launch dbeaver --profile desarrollo --dry-run
     eap.cmd launch dbeaver --profile desarrollo
     eap.cmd launch vscode --profile desarrollo
@@ -454,6 +456,24 @@ La carpeta
 launcher o un comando generado la necesita; no es obligatoria para todos los
 componentes.
 
+### Bruno
+
+Bruno se instala desde el ZIP portable oficial de Windows x64 en
+`components/bruno/community/<versión>`. EAP sigue la línea estable 4.x,
+selecciona únicamente releases finales y verifica el SHA-256 publicado con el
+artefacto de GitHub.
+
+El launcher abre Bruno con el workspace del profile como directorio de trabajo
+y pasa `--user-data-dir` para mantener preferencias, cachés y estado interno en
+`data/profiles/<datos>/components/bruno/user-data`. Las colecciones y workspaces
+son archivos locales compatibles con Git; su ubicación predeterminada queda en
+`data/profiles/<datos>/home/Documents/bruno`, dentro del home privado del
+profile. Pueden guardarse también junto al proyecto desde la propia interfaz.
+
+La aplicación de escritorio permite crear y consumir APIs HTTP, GraphQL, gRPC,
+WebSocket y cURL. El CLI `bru`, orientado a automatización y CI, es un paquete de
+Node.js independiente y no forma parte de este componente gráfico.
+
 ### DBeaver Community
 
 DBeaver se instala side-by-side en
@@ -609,6 +629,7 @@ repositorios públicos.
 - components/git/git-for-windows/<version>: instalaciones MinGit compartidas;
 - components/nodejs/nodejs/<version>: instalaciones Node.js compartidas;
 - components/python/pythoncore/<version>: instalaciones CPython compartidas;
+- components/bruno/community/<version>: instalaciones Bruno compartidas;
 - components/dbeaver/community/<version>: instalaciones DBeaver compartidas;
 - components/vscode/microsoft/<version>: instalaciones VS Code compartidas;
 - components/vscodium/community/<version>: instalaciones VSCodium compartidas;

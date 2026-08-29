@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "bruno",
+  "displayName": "Bruno",
+  "description": "Cliente de APIs local-first y compatible con Git",
+  "category": "applications",
+  "kind": "application",
+  "launchers": [
+    {
+      "id": "bruno",
+      "displayName": "Bruno",
+      "type": "application",
+      "workspaceMode": "environment",
+      "executable": "{{component.root}}/Bruno.exe",
+      "arguments": [
+        "--user-data-dir={{data.component}}\\user-data"
+      ],
+      "environment": {
+        "EAP_COMPONENT_DATA": "{{data.component}}",
+        "EAP_WORKSPACE": "{{workspace.selected}}"
+      },
+      "dataDirectories": [
+        "{{data.component}}\\user-data"
+      ],
+      "startMode": "detached"
+    }
+  ],
+  "capability": {
+    "id": "app.api-client",
+    "exclusive": false
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": 4,
+      "displayName": "Bruno 4.x estable"
+    }
+  ],
+  "defaultProvider": "community",
+  "defaultTrack": 4,
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "community",
+      "componentId": "bruno-community",
+      "displayName": "Bruno Community",
+      "vendor": "Bruno Software Inc",
+      "license": "MIT",
+      "homepage": "https://www.usebruno.com/",
+      "resolver": {
+        "type": "github-release-asset",
+        "apiUrl": "https://api.github.com/repos/usebruno/bruno/releases?per_page=100",
+        "assetPattern": "^bruno_(?P<version>\\d+\\.\\d+\\.\\d+)_x64_win\\.zip$"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "source": "GitHub release asset digest"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "bruno/{provider}/{version}",
+    "stripSingleRoot": false,
+    "maxExtractBytes": 1073741824,
+    "requiredFiles": [
+      "Bruno.exe",
+      "resources/app.asar",
+      "resources/portable.json"
+    ],
+    "validation": {
+      "type": "files-only"
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{data.component}}/user-data",
+        "displayName": "Configuración Bruno",
+        "role": "configuration",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{profile.home}}/Documents/bruno",
+        "displayName": "Colecciones y workspaces Bruno",
+        "role": "workspace",
+        "showInDashboard": true
+      }
+    ],
+    "files": []
+  },
+  "environment": {
+    "variables": {},
+    "path": []
+  }
+}

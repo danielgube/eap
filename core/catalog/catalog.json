@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "0.19.0",
+  "catalogVersion": "0.20.0",
   "components": [
     {
       "id": "java",
@@ -21,6 +21,10 @@
     {
       "id": "python",
       "manifest": "components/python.json"
+    },
+    {
+      "id": "bruno",
+      "manifest": "components/bruno.json"
     },
     {
       "id": "dbeaver",

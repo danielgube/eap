@@ -656,6 +656,16 @@ def eclipse_component() -> ComponentDefinition:
     return ComponentDefinition(manifest_path, load_json(manifest_path))
 
 
+def bruno_component() -> ComponentDefinition:
+    manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "catalog"
+        / "components"
+        / "bruno.json"
+    )
+    return ComponentDefinition(manifest_path, load_json(manifest_path))
+
+
 def external_component(manifest_path: Path) -> ComponentDefinition:
     value = {
         "schemaVersion": 1,
@@ -1279,6 +1289,45 @@ class SettingsTests(unittest.TestCase):
 
 
 class ResolverTests(unittest.TestCase):
+    def test_resolves_bruno_portable_zip_from_stable_github_release(
+        self,
+    ) -> None:
+        component = bruno_component()
+        response = [
+            {
+                "draft": False,
+                "prerelease": False,
+                "assets": [
+                    {
+                        "name": "bruno_5.0.0_x64_win.zip",
+                        "browser_download_url": (
+                            "https://example.test/bruno-5.0.0.zip"
+                        ),
+                        "digest": "sha256:" + ("a" * 64),
+                        "size": 300,
+                    },
+                    {
+                        "name": "bruno_4.1.0_x64_win.zip",
+                        "browser_download_url": (
+                            "https://example.test/bruno-4.1.0.zip"
+                        ),
+                        "digest": "sha256:" + ("b" * 64),
+                        "size": 184_280_060,
+                    },
+                ],
+            }
+        ]
+
+        artifact = resolve_component(
+            component, "community", 4, FakeHttpClient(response)
+        )
+
+        self.assertEqual("4.1.0", artifact.version)
+        self.assertEqual("bruno_4.1.0_x64_win.zip", artifact.file_name)
+        self.assertEqual("b" * 64, artifact.sha256)
+        self.assertEqual(184_280_060, artifact.size)
+        self.assertEqual("bruno-community", artifact.component_id)
+
     def test_resolves_eclipse_enterprise_zip_with_official_sha512(self) -> None:
         component = eclipse_component()
         base_url = (
@@ -1632,6 +1681,34 @@ class ExtractionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_bruno_validates_portable_archive_root(self) -> None:
+        component = bruno_component()
+        candidate = self.root / "bruno"
+        (candidate / "resources").mkdir(parents=True)
+        (candidate / "Bruno.exe").touch()
+        (candidate / "resources" / "app.asar").touch()
+        (candidate / "resources" / "portable.json").touch()
+        artifact = ResolvedArtifact(
+            family="bruno",
+            component_id="bruno-community",
+            provider="community",
+            provider_name="Bruno Community",
+            track=4,
+            version="4.1.0",
+            url="https://example.test/bruno.zip",
+            file_name="bruno_4.1.0_x64_win.zip",
+            sha256="a" * 64,
+            size=184_280_060,
+            metadata_url="https://api.github.test/releases",
+        )
+
+        selected = self.installer._select_candidate_root(component, candidate)
+        self.installer._validate_payload(
+            component, artifact, selected, process_environment=None
+        )
+
+        self.assertEqual(candidate, selected)
 
     def test_rejects_zip_path_traversal(self) -> None:
         archive = self.root / "malicious.zip"
@@ -3414,6 +3491,68 @@ class LauncherTests(unittest.TestCase):
             )
             self.assertIn(
                 str(install_path / "bin"), launcher.environment["PATH"]
+            )
+
+    def test_bruno_uses_private_user_data_and_profile_collections(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            component = bruno_component()
+            catalog = Catalog(paths, {}, {"bruno": component})
+            store = EnvironmentStore(paths)
+            store.create("default", workspace_id="hbx")
+            install_path = (
+                paths.components / "bruno" / "community" / "4.1.0"
+            )
+            install_path.mkdir(parents=True)
+            (install_path / "Bruno.exe").touch()
+            artifact = ResolvedArtifact(
+                family="bruno",
+                component_id="bruno-community",
+                provider="community",
+                provider_name="Bruno Community",
+                track=4,
+                version="4.1.0",
+                url="https://example.test/bruno.zip",
+                file_name="bruno_4.1.0_x64_win.zip",
+                sha256="a" * 64,
+                size=184_280_060,
+                metadata_url="https://api.github.test/releases",
+            )
+            store.publish_component(
+                "default", artifact, install_path, "b" * 64
+            )
+            app = EapApplication.__new__(EapApplication)
+            app.paths = paths
+            app.catalog = catalog
+            app.environments = store
+
+            [launcher] = app.available_launchers("default")
+            workspace = paths.workspaces / "hbx"
+            profile_home = paths.data / "profiles" / "default" / "home"
+            component_data = (
+                paths.data
+                / "profiles"
+                / "default"
+                / "components"
+                / "bruno"
+            )
+            self.assertEqual(workspace, launcher.working_directory)
+            self.assertEqual(
+                (f"--user-data-dir={component_data / 'user-data'}",),
+                launcher.arguments,
+            )
+            self.assertTrue((component_data / "user-data").is_dir())
+            self.assertTrue((profile_home / "Documents" / "bruno").is_dir())
+            self.assertEqual(
+                str(component_data),
+                launcher.environment["EAP_COMPONENT_DATA"],
+            )
+            self.assertEqual(
+                str(workspace), launcher.environment["EAP_WORKSPACE"]
+            )
+            self.assertEqual(
+                str(profile_home), launcher.environment["USERPROFILE"]
             )
 
     def test_dbeaver_uses_profile_home_private_workspace_and_detached_process(
