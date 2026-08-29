@@ -636,6 +636,26 @@ def vscode_component(manifest_path: Path) -> ComponentDefinition:
     return ComponentDefinition(manifest_path, value)
 
 
+def intellij_component() -> ComponentDefinition:
+    manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "catalog"
+        / "components"
+        / "intellij-idea.json"
+    )
+    return ComponentDefinition(manifest_path, load_json(manifest_path))
+
+
+def eclipse_component() -> ComponentDefinition:
+    manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "catalog"
+        / "components"
+        / "eclipse.json"
+    )
+    return ComponentDefinition(manifest_path, load_json(manifest_path))
+
+
 def external_component(manifest_path: Path) -> ComponentDefinition:
     value = {
         "schemaVersion": 1,
@@ -1259,6 +1279,69 @@ class SettingsTests(unittest.TestCase):
 
 
 class ResolverTests(unittest.TestCase):
+    def test_resolves_eclipse_enterprise_zip_with_official_sha512(self) -> None:
+        component = eclipse_component()
+        base_url = (
+            "https://download.eclipse.org/technology/epp/downloads/"
+            "release/2026-06/R/"
+        )
+        file_name = "eclipse-jee-2026-06-R-win32-x86_64.zip"
+        checksum_url = f"{base_url}{file_name}.sha512"
+        client = FakeTextHttpClient(
+            {checksum_url: f"{'b' * 128} *{file_name}\n"}
+        )
+
+        artifact = resolve_component(
+            component, "enterprise-java", "2026-06", client
+        )
+
+        self.assertEqual("2026-06", artifact.version)
+        self.assertEqual(file_name, artifact.file_name)
+        self.assertEqual("sha512", artifact.checksum_algorithm)
+        self.assertEqual("b" * 128, artifact.sha512)
+        self.assertEqual(
+            "eclipse-enterprise-java", artifact.component_id
+        )
+        self.assertEqual(base_url, artifact.metadata_url)
+
+    def test_resolves_intellij_zip_from_official_jetbrains_api(self) -> None:
+        component = intellij_component()
+        checksum_url = (
+            "https://download.jetbrains.test/idea/"
+            "idea-2026.2.1.win.zip.sha256"
+        )
+        response = {
+            "IIU": [
+                {
+                    "type": "release",
+                    "version": "2026.2.1",
+                    "downloads": {
+                        "windowsZip": {
+                            "link": (
+                                "https://download.jetbrains.test/idea/"
+                                "idea-2026.2.1.win.zip"
+                            ),
+                            "size": 1_614_981_679,
+                            "checksumLink": checksum_url,
+                        }
+                    },
+                }
+            ]
+        }
+        artifact = resolve_component(
+            component,
+            "jetbrains",
+            "2026.2",
+            FakeNodeHttpClient(response, {checksum_url: ("a" * 64) + "\n"}),
+        )
+        self.assertEqual("2026.2.1", artifact.version)
+        self.assertEqual("idea-2026.2.1.win.zip", artifact.file_name)
+        self.assertEqual("a" * 64, artifact.sha256)
+        self.assertEqual(1_614_981_679, artifact.size)
+        self.assertEqual("intellij-idea-jetbrains", artifact.component_id)
+        self.assertIn("code=IIU", artifact.metadata_url)
+        self.assertIn("majorVersion=2026.2", artifact.metadata_url)
+
     def test_resolves_vscode_zip_from_official_update_api(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             component = vscode_component(
@@ -1571,6 +1654,60 @@ class ExtractionTests(unittest.TestCase):
             "fixture",
             (destination / "jdk" / "bin" / "java.exe").read_text(),
         )
+
+    def test_component_can_use_a_narrow_explicit_extraction_cap(self) -> None:
+        archive = self.root / "bounded.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("payload.bin", "12345")
+        destination = self.root / "bounded"
+        destination.mkdir()
+
+        with self.assertRaisesRegex(
+            IntegrityError, "install.maxExtractBytes"
+        ):
+            self.installer._safe_extract_zip(
+                archive, destination, maximum_bytes=4
+            )
+
+    def test_eclipse_validation_requires_its_bundled_jre(self) -> None:
+        component = eclipse_component()
+        candidate = self.root / "eclipse"
+        for relative in component.value["install"]["requiredFiles"]:
+            target = candidate / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+        vm_directory = candidate / "plugins" / "bundled-jre" / "jre" / "bin"
+        vm_directory.mkdir(parents=True)
+        javaw = vm_directory / "javaw.exe"
+        javaw.touch()
+        (candidate / "eclipse.ini").write_text(
+            "-startup\nplugins/launcher.jar\n-vm\n"
+            "plugins/bundled-jre/jre/bin\n-vmargs\n-Xmx2g\n",
+            encoding="utf-8",
+        )
+        artifact = ResolvedArtifact(
+            family="eclipse",
+            component_id="eclipse-java",
+            provider="java",
+            provider_name="Eclipse IDE for Java Developers",
+            track="2026-06",
+            version="2026-06",
+            url="https://example.test/eclipse.zip",
+            file_name="eclipse.zip",
+            sha256=None,
+            sha512="a" * 128,
+            size=None,
+            metadata_url="https://example.test/",
+        )
+
+        self.installer._validate_payload(
+            component, artifact, candidate, process_environment={}
+        )
+        javaw.unlink()
+        with self.assertRaisesRegex(IntegrityError, "JRE incluido"):
+            self.installer._validate_payload(
+                component, artifact, candidate, process_environment={}
+            )
 
     def test_files_only_validation_does_not_start_gui_application(self) -> None:
         component = dbeaver_component(self.root / "dbeaver.json")
@@ -2983,6 +3120,159 @@ class LauncherTests(unittest.TestCase):
                 "elimina variables reservadas del profile.*HOME",
             ):
                 Catalog._validate_component(value, "dbeaver", path)
+
+    def test_intellij_opens_workspace_with_portable_private_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            component = intellij_component()
+            catalog = Catalog(paths, {}, {"intellij-idea": component})
+            store = EnvironmentStore(paths)
+            store.create("default", workspace_id="hbx")
+            install_path = (
+                paths.components
+                / "intellij-idea"
+                / "jetbrains"
+                / "2026.2.1"
+            )
+            executable = install_path / "bin" / "idea64.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            artifact = ResolvedArtifact(
+                family="intellij-idea",
+                component_id="intellij-idea-jetbrains",
+                provider="jetbrains",
+                provider_name="JetBrains · Free / Ultimate",
+                track="2026.2",
+                version="2026.2.1",
+                url="https://example.test/idea.zip",
+                file_name="idea.zip",
+                sha256="a" * 64,
+                size=250,
+                metadata_url="https://data.example/releases",
+            )
+            store.publish_component(
+                "default", artifact, install_path, "b" * 64
+            )
+            app = EapApplication.__new__(EapApplication)
+            app.paths = paths
+            app.catalog = catalog
+            app.environments = store
+
+            [launcher] = app.available_launchers("default")
+            workspace = paths.workspaces / "hbx"
+            component_data = (
+                paths.data
+                / "profiles"
+                / "default"
+                / "components"
+                / "intellij-idea"
+            )
+            properties = component_data / "idea.properties"
+            self.assertEqual(executable.resolve(), launcher.executable)
+            self.assertEqual((str(workspace),), launcher.arguments)
+            self.assertEqual(workspace, launcher.working_directory)
+            self.assertEqual(
+                properties,
+                Path(launcher.environment["IDEA_PROPERTIES"]),
+            )
+            self.assertEqual(
+                str(install_path),
+                launcher.environment["INTELLIJ_IDEA_HOME"],
+            )
+            self.assertEqual(
+                "\n".join(
+                    [
+                        f"idea.config.path={component_data.as_posix()}/config",
+                        f"idea.system.path={component_data.as_posix()}/system",
+                        f"idea.plugins.path={component_data.as_posix()}/plugins",
+                        f"idea.log.path={component_data.as_posix()}/log",
+                        "",
+                    ]
+                ),
+                properties.read_text(encoding="utf-8"),
+            )
+            for directory in ("config", "system", "plugins", "log"):
+                self.assertTrue((component_data / directory).is_dir())
+
+    def test_eclipse_uses_workspace_and_private_runtime_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            component = eclipse_component()
+            catalog = Catalog(paths, {}, {"eclipse": component})
+            store = EnvironmentStore(paths)
+            store.create("default", workspace_id="hbx")
+            install_path = (
+                paths.components / "eclipse" / "java" / "2026-06"
+            )
+            install_path.mkdir(parents=True)
+            executable = install_path / "eclipse.exe"
+            executable.touch()
+            configuration = install_path / "configuration"
+            configuration.mkdir()
+            (configuration / "config.ini").write_text(
+                "eclipse.product=fixture", encoding="utf-8"
+            )
+            p2 = install_path / "p2"
+            p2.mkdir()
+            (p2 / "state.txt").write_text("fixture", encoding="utf-8")
+            artifact = ResolvedArtifact(
+                family="eclipse",
+                component_id="eclipse-java",
+                provider="java",
+                provider_name="Eclipse IDE for Java Developers",
+                track="2026-06",
+                version="2026-06",
+                url="https://example.test/eclipse.zip",
+                file_name="eclipse.zip",
+                sha256=None,
+                sha512="a" * 128,
+                size=None,
+                metadata_url="https://example.test/",
+            )
+            store.publish_component(
+                "default", artifact, install_path, "b" * 64
+            )
+            app = EapApplication.__new__(EapApplication)
+            app.paths = paths
+            app.catalog = catalog
+            app.environments = store
+
+            [launcher] = app.available_launchers("default")
+            workspace = paths.workspaces / "hbx"
+            component_data = (
+                paths.data
+                / "profiles"
+                / "default"
+                / "components"
+                / "eclipse"
+            )
+            runtime = component_data / "runtime" / "java" / "2026-06"
+            self.assertEqual(executable.resolve(), launcher.executable)
+            self.assertEqual(workspace, launcher.working_directory)
+            self.assertEqual(
+                (
+                    "-configuration",
+                    (runtime / "configuration").as_uri(),
+                    "-data",
+                    str(workspace),
+                ),
+                launcher.arguments,
+            )
+            self.assertEqual(
+                str(install_path), launcher.environment["ECLIPSE_HOME"]
+            )
+            self.assertEqual(
+                "eclipse.product=fixture",
+                (runtime / "configuration" / "config.ini").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            self.assertEqual(
+                "fixture",
+                (runtime / "p2" / "state.txt").read_text(encoding="utf-8"),
+            )
 
     def test_external_application_inherits_environment_and_workspace(
         self,

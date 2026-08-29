@@ -35,6 +35,14 @@
       "manifest": "components/vscodium.json"
     },
     {
+      "id": "eclipse",
+      "manifest": "components/eclipse.json"
+    },
+    {
+      "id": "intellij-idea",
+      "manifest": "components/intellij-idea.json"
+    },
+    {
       "id": "kiro",
       "manifest": "components/kiro.json"
     }

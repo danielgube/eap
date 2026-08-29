@@ -1485,6 +1485,7 @@ class EapApplication:
                 )
                 tokens = {
                     "{{component.root}}": str(install_path),
+                    "{{component.provider}}": str(locked["provider"]),
                     "{{component.version}}": str(locked["version"]),
                     "{{external.executable}}": (
                         str(external_executable)

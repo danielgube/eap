@@ -649,6 +649,7 @@ class EnvironmentStore:
             )
             tokens = {
                 "{{component.root}}": str(install_path),
+                "{{component.provider}}": str(locked["provider"]),
                 "{{external.executable}}": (
                     str(external_executable)
                     if external_executable is not None
@@ -817,6 +818,7 @@ class EnvironmentStore:
             )
         tokens = {
             "{{component.root}}": str(install_path),
+            "{{component.provider}}": str(locked["provider"]),
             "{{component.version}}": str(locked["version"]),
             "{{external.executable}}": external_executable,
             "{{profile.root}}": str(profile),
@@ -827,6 +829,9 @@ class EnvironmentStore:
             "{{data.component}}": str(
                 profile / "components" / component_id
             ),
+            "{{data.component.posix}}": (
+                profile / "components" / component_id
+            ).as_posix(),
             "{{workspace.root}}": str(workspace),
             "{{workspace.selected}}": str(workspace),
             "{{eap.root}}": str(self.paths.root),

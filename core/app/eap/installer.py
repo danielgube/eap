@@ -115,14 +115,20 @@ class ComponentInstaller:
                     f"Existe una instalación divergente en {target}; use repair"
                 )
 
-            self._check_disk_space(artifact)
+            self._check_disk_space(component, artifact)
             archive = self._obtain_archive(artifact, transition)
             transition("verified", archive=str(archive.relative_to(self.paths.root)))
 
             extract_root = staging_root / "extract"
             extract_root.mkdir(parents=True, exist_ok=False)
             self.status("Extrayendo el ZIP en staging...")
-            self._safe_extract_zip(archive, extract_root)
+            self._safe_extract_zip(
+                archive,
+                extract_root,
+                maximum_bytes=component.value["install"].get(
+                    "maxExtractBytes"
+                ),
+            )
             transition("staged")
 
             candidate = self._select_candidate_root(component, extract_root)
@@ -191,10 +197,21 @@ class ComponentInstaller:
             raise ValidationError(f"Destino de componente inválido: {target}") from exc
         return target
 
-    def _check_disk_space(self, artifact: ResolvedArtifact) -> None:
+    def _check_disk_space(
+        self,
+        component: ComponentDefinition,
+        artifact: ResolvedArtifact,
+    ) -> None:
         available = shutil.disk_usage(self.paths.root).free
         archive_size = artifact.size or 350 * 1024 * 1024
-        required = archive_size * 3
+        component_extract_limit = component.value["install"].get(
+            "maxExtractBytes"
+        )
+        required = (
+            archive_size + int(component_extract_limit)
+            if component_extract_limit is not None
+            else archive_size * 3
+        )
         if available < required:
             raise TransactionError(
                 f"Espacio insuficiente: se requieren aproximadamente "
@@ -290,8 +307,17 @@ class ComponentInstaller:
         os.replace(partial, archive)
         return archive
 
-    def _safe_extract_zip(self, archive: Path, destination: Path) -> None:
-        max_bytes = self.settings.get_int("install.maxExtractBytes", minimum=1)
+    def _safe_extract_zip(
+        self,
+        archive: Path,
+        destination: Path,
+        maximum_bytes: int | None = None,
+    ) -> None:
+        max_bytes = (
+            maximum_bytes
+            if maximum_bytes is not None
+            else self.settings.get_int("install.maxExtractBytes", minimum=1)
+        )
         max_ratio = self.settings.get_int("install.maxCompressionRatio", minimum=1)
         total = 0
         with zipfile.ZipFile(archive, "r") as source:
@@ -390,6 +416,8 @@ class ComponentInstaller:
             self._validate_java_payload(
                 component, artifact, candidate, process_environment
             )
+        elif validation_type == "eclipse-package":
+            self._validate_eclipse_payload(candidate)
         elif validation_type == "command":
             self._run_smoke_test(
                 component,
@@ -403,6 +431,36 @@ class ComponentInstaller:
             raise ValidationError(
                 f"Validación de instalación no soportada para {component.id}: "
                 f"{validation_type!r}"
+            )
+
+    @staticmethod
+    def _validate_eclipse_payload(candidate: Path) -> None:
+        ini_path = candidate / "eclipse.ini"
+        try:
+            lines = [
+                line.strip()
+                for line in ini_path.read_text(encoding="utf-8-sig").splitlines()
+            ]
+            vm_index = lines.index("-vm")
+            vm_value = lines[vm_index + 1]
+        except (OSError, ValueError, IndexError) as exc:
+            raise IntegrityError(
+                "eclipse.ini no declara el JRE incluido mediante -vm"
+            ) from exc
+        relative = PurePosixPath(vm_value.replace("\\", "/"))
+        if relative.is_absolute() or any(
+            part in {"", ".", ".."} for part in relative.parts
+        ):
+            raise IntegrityError(f"Ruta -vm no válida en eclipse.ini: {vm_value}")
+        vm_path = candidate.joinpath(*relative.parts).resolve()
+        try:
+            vm_path.relative_to(candidate.resolve())
+        except ValueError as exc:
+            raise IntegrityError("El JRE de Eclipse sale del payload") from exc
+        javaw = vm_path / "javaw.exe" if vm_path.is_dir() else vm_path
+        if not javaw.is_file():
+            raise IntegrityError(
+                f"No existe el JRE incluido declarado por Eclipse: {vm_value}"
             )
 
     def _validate_java_payload(

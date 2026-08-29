@@ -81,6 +81,14 @@ def resolve_component(
         return _resolve_vscode_update_api(
             component, provider, track, client
         )
+    if resolver_type == "jetbrains-product-release":
+        return _resolve_jetbrains_product_release(
+            component, provider, track, client
+        )
+    if resolver_type == "eclipse-epp-release":
+        return _resolve_eclipse_epp_release(
+            component, provider, track, client
+        )
     raise ValidationError(f"Resolver no soportado: {resolver_type!r}")
 
 
@@ -497,6 +505,142 @@ def _resolve_vscode_update_api(
         url=url,
         file_name=file_name,
         sha256=checksum,
+        size=None,
+        metadata_url=metadata_url,
+    )
+
+
+def _resolve_jetbrains_product_release(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    product_code = str(resolver["productCode"])
+    download_key = str(resolver.get("downloadKey", "windowsZip"))
+    api_url = str(resolver["apiUrl"])
+    separator = "&" if urllib.parse.urlparse(api_url).query else "?"
+    query = urllib.parse.urlencode(
+        {
+            "code": product_code,
+            "type": "release",
+            "latest": "true",
+            "majorVersion": str(track),
+        }
+    )
+    metadata_url = f"{api_url}{separator}{query}"
+    response = client.get_json(metadata_url)
+    releases = response.get(product_code) if isinstance(response, dict) else None
+    if not isinstance(releases, list):
+        raise NetworkError(
+            f"JetBrains no devolvió releases válidas para {component.display_name}"
+        )
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for release in releases:
+        if not isinstance(release, dict) or release.get("type") != "release":
+            continue
+        version = str(release.get("version", ""))
+        if _version_belongs_to_track(track, version):
+            candidates.append((version, release))
+    if not candidates:
+        raise NetworkError(
+            f"JetBrains no publicó {component.display_name} para la línea {track}"
+        )
+    version, release = max(candidates, key=lambda item: version_key(item[0]))
+    try:
+        downloads = release["downloads"]
+        if not isinstance(downloads, dict):
+            raise TypeError("downloads no es un objeto")
+        package = downloads[download_key]
+        if not isinstance(package, dict):
+            raise TypeError("el artefacto no es un objeto")
+        url = str(package["link"])
+        checksum_url = str(package["checksumLink"])
+        size = int(package["size"]) if package.get("size") is not None else None
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NetworkError(
+            f"La API de JetBrains está incompleta para {component.display_name} "
+            f"{version}"
+        ) from exc
+    client.require_https(checksum_url)
+    checksum_response = client.get_text(checksum_url, maximum_bytes=4096)
+    checksum_match = re.search(r"\b([0-9a-fA-F]{64})\b", checksum_response)
+    if not checksum_match:
+        raise NetworkError(
+            f"JetBrains no proporcionó un SHA-256 válido para {version}"
+        )
+    checksum = checksum_match.group(1).lower()
+    file_name = PurePosixPath(urllib.parse.urlparse(url).path).name
+    _validate_artifact(
+        track, version, url, file_name, checksum, "sha256", client
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=checksum,
+        size=size,
+        metadata_url=metadata_url,
+    )
+
+
+def _resolve_eclipse_epp_release(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    package_name = str(resolver["packageName"])
+    release_build = str(resolver.get("releaseBuild", "R"))
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", package_name):
+        raise ValidationError(
+            f"packageName inválido para {component.id}: {package_name!r}"
+        )
+    if not re.fullmatch(r"[A-Z][A-Z0-9]*", release_build):
+        raise ValidationError(
+            f"releaseBuild inválido para {component.id}: {release_build!r}"
+        )
+    version = str(track)
+    base_url = str(resolver["downloadBaseUrl"]).rstrip("/")
+    metadata_url = f"{base_url}/{version}/{release_build}/"
+    file_name = (
+        f"eclipse-{package_name}-{version}-{release_build}-"
+        "win32-x86_64.zip"
+    )
+    url = f"{metadata_url}{file_name}"
+    checksum_url = f"{url}.sha512"
+    checksum_response = client.get_text(checksum_url, maximum_bytes=4096)
+    checksum_match = re.search(
+        rf"\b([0-9a-fA-F]{{128}})\b\s+\*?{re.escape(file_name)}\s*$",
+        checksum_response,
+        flags=re.MULTILINE,
+    )
+    if not checksum_match:
+        raise NetworkError(
+            f"Eclipse Foundation no proporcionó el SHA-512 de {file_name}"
+        )
+    checksum = checksum_match.group(1).lower()
+    _validate_artifact(
+        track, version, url, file_name, checksum, "sha512", client
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=None,
+        sha512=checksum,
         size=None,
         metadata_url=metadata_url,
     )

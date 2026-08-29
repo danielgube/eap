@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "id": "intellij-idea",
+  "displayName": "IntelliJ IDEA",
+  "description": "IDE unificado de JetBrains: uso gratuito o funciones Ultimate con licencia",
+  "category": "applications",
+  "kind": "application",
+  "launchers": [
+    {
+      "id": "intellij-idea",
+      "displayName": "IntelliJ IDEA",
+      "type": "application",
+      "workspaceMode": "environment",
+      "executable": "{{component.root}}/bin/idea64.exe",
+      "arguments": [
+        "{{workspace.selected}}"
+      ],
+      "environment": {
+        "EAP_COMPONENT_DATA": "{{data.component}}",
+        "EAP_WORKSPACE": "{{workspace.selected}}",
+        "IDEA_PROPERTIES": "{{data.component}}/idea.properties"
+      },
+      "dataDirectories": [
+        "{{data.component}}/config",
+        "{{data.component}}/system",
+        "{{data.component}}/plugins",
+        "{{data.component}}/log"
+      ],
+      "startMode": "detached"
+    }
+  ],
+  "capability": {
+    "id": "app.ide.intellij-idea",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": "2025.3",
+      "displayName": "IntelliJ IDEA 2025.3"
+    },
+    {
+      "id": "2026.1",
+      "displayName": "IntelliJ IDEA 2026.1"
+    },
+    {
+      "id": "2026.2",
+      "displayName": "IntelliJ IDEA 2026.2"
+    }
+  ],
+  "defaultProvider": "jetbrains",
+  "defaultTrack": "2026.2",
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "jetbrains",
+      "componentId": "intellij-idea-jetbrains",
+      "displayName": "JetBrains · Free / Ultimate",
+      "vendor": "JetBrains s.r.o.",
+      "license": "JetBrains User Agreement",
+      "homepage": "https://www.jetbrains.com/idea/",
+      "resolver": {
+        "type": "jetbrains-product-release",
+        "apiUrl": "https://data.services.jetbrains.com/products/releases",
+        "productCode": "IIU",
+        "downloadKey": "windowsZip"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha256",
+        "source": "JetBrains Products Release API"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "intellij-idea/{provider}/{version}",
+    "stripSingleRoot": false,
+    "maxExtractBytes": 6442450944,
+    "requiredFiles": [
+      "bin/idea64.exe",
+      "bin/idea.bat",
+      "bin/idea.properties",
+      "product-info.json",
+      "jbr/bin/java.exe"
+    ],
+    "validation": {
+      "type": "files-only"
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{data.component}}/config",
+        "displayName": "Configuración IntelliJ IDEA",
+        "role": "configuration",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{data.component}}/system",
+        "displayName": "Cachés IntelliJ IDEA",
+        "role": "cache",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{data.component}}/plugins",
+        "displayName": "Plugins IntelliJ IDEA",
+        "role": "extensions",
+        "showInDashboard": true
+      },
+      {
+        "path": "{{data.component}}/log",
+        "displayName": "Logs IntelliJ IDEA",
+        "role": "data",
+        "showInDashboard": false
+      }
+    ],
+    "files": [
+      {
+        "path": "{{data.component}}/idea.properties",
+        "displayName": "Rutas portables IntelliJ IDEA",
+        "role": "configuration",
+        "showInDashboard": false,
+        "mode": "if-missing",
+        "content": "idea.config.path={{data.component.posix}}/config\nidea.system.path={{data.component.posix}}/system\nidea.plugins.path={{data.component.posix}}/plugins\nidea.log.path={{data.component.posix}}/log\n"
+      }
+    ]
+  },
+  "environment": {
+    "variables": {
+      "INTELLIJ_IDEA_HOME": "{{component.root}}"
+    },
+    "path": [
+      "{{component.root}}/bin"
+    ]
+  }
+}

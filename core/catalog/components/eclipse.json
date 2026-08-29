@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "id": "eclipse",
+  "displayName": "Eclipse IDE",
+  "description": "IDE portable con paquetes Java y Enterprise Java/Web",
+  "category": "applications",
+  "kind": "application",
+  "launchers": [
+    {
+      "id": "eclipse",
+      "displayName": "Eclipse IDE",
+      "type": "application",
+      "workspaceMode": "environment",
+      "executable": "{{component.root}}/eclipse.exe",
+      "arguments": [
+        "-configuration",
+        "{{data.component.uri}}/runtime/{{component.provider}}/{{component.version}}/configuration",
+        "-data",
+        "{{workspace.selected}}"
+      ],
+      "environment": {
+        "EAP_COMPONENT_DATA": "{{data.component}}",
+        "EAP_WORKSPACE": "{{workspace.selected}}"
+      },
+      "unset": [
+        "CLASSPATH",
+        "JDK_JAVA_OPTIONS"
+      ],
+      "dataCopies": [
+        {
+          "source": "{{component.root}}/configuration",
+          "target": "{{data.component}}/runtime/{{component.provider}}/{{component.version}}/configuration",
+          "mode": "if-missing"
+        },
+        {
+          "source": "{{component.root}}/p2",
+          "target": "{{data.component}}/runtime/{{component.provider}}/{{component.version}}/p2",
+          "mode": "if-missing"
+        }
+      ],
+      "startMode": "detached"
+    }
+  ],
+  "capability": {
+    "id": "app.ide.eclipse",
+    "exclusive": true
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "x64",
+    "archiveType": "zip"
+  },
+  "tracks": [
+    {
+      "id": "2025-12",
+      "displayName": "Eclipse IDE 2025-12 R"
+    },
+    {
+      "id": "2026-03",
+      "displayName": "Eclipse IDE 2026-03 R"
+    },
+    {
+      "id": "2026-06",
+      "displayName": "Eclipse IDE 2026-06 R"
+    }
+  ],
+  "defaultProvider": "java",
+  "defaultTrack": "2026-06",
+  "updatePolicy": "same-track",
+  "providers": [
+    {
+      "id": "java",
+      "componentId": "eclipse-java",
+      "displayName": "Eclipse IDE for Java Developers",
+      "vendor": "Eclipse Foundation",
+      "license": "EPL-2.0",
+      "homepage": "https://www.eclipse.org/downloads/packages/",
+      "resolver": {
+        "type": "eclipse-epp-release",
+        "downloadBaseUrl": "https://download.eclipse.org/technology/epp/downloads/release",
+        "packageName": "java",
+        "releaseBuild": "R"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha512",
+        "source": "Eclipse Foundation EPP checksum"
+      }
+    },
+    {
+      "id": "enterprise-java",
+      "componentId": "eclipse-enterprise-java",
+      "displayName": "Eclipse IDE for Enterprise Java and Web Developers",
+      "vendor": "Eclipse Foundation",
+      "license": "EPL-2.0",
+      "homepage": "https://www.eclipse.org/downloads/packages/",
+      "resolver": {
+        "type": "eclipse-epp-release",
+        "downloadBaseUrl": "https://download.eclipse.org/technology/epp/downloads/release",
+        "packageName": "jee",
+        "releaseBuild": "R"
+      },
+      "verification": {
+        "checksumAlgorithm": "sha512",
+        "source": "Eclipse Foundation EPP checksum"
+      }
+    }
+  ],
+  "install": {
+    "directoryTemplate": "eclipse/{provider}/{version}",
+    "stripSingleRoot": true,
+    "maxExtractBytes": 1610612736,
+    "requiredFiles": [
+      ".eclipseproduct",
+      "artifacts.xml",
+      "eclipse.exe",
+      "eclipsec.exe",
+      "eclipse.ini",
+      "configuration/config.ini",
+      "configuration/org.eclipse.equinox.simpleconfigurator/bundles.info"
+    ],
+    "validation": {
+      "type": "eclipse-package"
+    }
+  },
+  "data": {
+    "directories": [
+      {
+        "path": "{{data.component}}",
+        "displayName": "Datos privados Eclipse",
+        "role": "data",
+        "showInDashboard": true
+      }
+    ],
+    "files": []
+  },
+  "environment": {
+    "variables": {
+      "ECLIPSE_HOME": "{{component.root}}"
+    },
+    "path": [
+      "{{component.root}}"
+    ]
+  }
+}

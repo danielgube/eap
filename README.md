@@ -116,6 +116,9 @@ Comandos útiles:
     eap.cmd component install dbeaver --track 26.1 --profile desarrollo
     eap.cmd component install vscode --profile desarrollo
     eap.cmd component install vscodium --profile desarrollo
+    eap.cmd component install eclipse --provider java --track 2026-06 --profile desarrollo
+    eap.cmd component install eclipse --provider enterprise-java --track 2026-06 --profile desarrollo
+    eap.cmd component install intellij-idea --track 2026.2 --profile desarrollo
     eap.cmd component list
     eap.cmd component check-updates --profile desarrollo
     eap.cmd component update java --profile desarrollo
@@ -129,6 +132,8 @@ Comandos útiles:
     eap.cmd launch dbeaver --profile desarrollo --dry-run
     eap.cmd launch dbeaver --profile desarrollo
     eap.cmd launch vscode --profile desarrollo
+    eap.cmd launch eclipse --profile desarrollo
+    eap.cmd launch intellij-idea --profile desarrollo
     eap.cmd shortcut create dbeaver --profile desarrollo
     eap.cmd shortcut create vscode --profile desarrollo
 
@@ -505,6 +510,44 @@ activo; `codium` hace lo mismo para VSCodium. Un acceso directo creado desde la
 interfaz sigue apuntando al launcher estable de EAP, de modo que no pierde el
 workspace ni la activación portable del profile.
 
+### IntelliJ IDEA
+
+Desde la versión 2025.3, JetBrains distribuye IntelliJ IDEA como un producto
+unificado: el mismo ZIP ofrece gratuitamente las capacidades que antes
+correspondían a Community y desbloquea las funciones Ultimate cuando el usuario
+activa una licencia o suscripción. Por eso EAP publica un único componente
+`intellij-idea`; no duplica el payload bajo nombres Community y Enterprise que ya
+no corresponden a distribuciones distintas.
+
+EAP resuelve el ZIP portable de Windows x64 y su SHA-256 desde la API oficial de
+JetBrains. Se instala en
+`components/intellij-idea/jetbrains/<versión>` y abre directamente el workspace
+del profile. La línea `same-track` permite conservar una versión compatible con
+una licencia perpetua anterior o seguir la línea estable actual.
+
+El launcher define `IDEA_PROPERTIES` sin modificar el payload. Configuración,
+cachés, plugins y logs quedan separados bajo
+`data/profiles/<datos>/components/intellij-idea`; el archivo generado
+`idea.properties` fija sus cuatro rutas portables. Tanto el modo gratuito como
+Ultimate comparten este aislamiento y el home privado del profile.
+
+### Eclipse IDE
+
+Eclipse se ofrece como una familia con dos paquetes oficiales de Eclipse
+Packaging Project: `java`, que instala Eclipse IDE for Java Developers, y
+`enterprise-java`, que añade las herramientas para Enterprise Java y desarrollo
+web. Ambos paquetes incluyen su propio JRE y se verifican con el SHA-512
+publicado por Eclipse Foundation.
+
+Los payloads se instalan side-by-side en
+`components/eclipse/<proveedor>/<versión>`. El launcher abre el workspace del
+profile mediante `-data` y copia `configuration` y `p2` a
+`data/profiles/<datos>/components/eclipse/runtime/<proveedor>/<versión>` antes
+del primer arranque. Así, los datos de Equinox de Java y Enterprise no se
+mezclan ni modifican sus plantillas originales. `ECLIPSE_HOME` y el comando
+`eclipse` quedan disponibles únicamente en los profiles que tengan activo el
+componente.
+
 ## Pocketools
 
 Las Pocketools son utilidades globales pequeñas que no pertenecen a un profile
@@ -569,6 +612,8 @@ repositorios públicos.
 - components/dbeaver/community/<version>: instalaciones DBeaver compartidas;
 - components/vscode/microsoft/<version>: instalaciones VS Code compartidas;
 - components/vscodium/community/<version>: instalaciones VSCodium compartidas;
+- components/eclipse/<proveedor>/<version>: instalaciones Eclipse IDE compartidas;
+- components/intellij-idea/jetbrains/<version>: instalaciones IntelliJ IDEA compartidas;
 - pocketools/bin: shims globales generados por EAP;
 - pocketools/packages/<repositorio>/<id>/<version>: payloads Pocketool;
 - data/pocketools: lock, índices Git guardados y estado mutable de Pocketools;

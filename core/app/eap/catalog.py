@@ -361,10 +361,20 @@ class Catalog:
                     "install.requiredFiles debe ser una lista de textos "
                     f"en {path}"
                 )
+            max_extract_bytes = install.get("maxExtractBytes")
+            if max_extract_bytes is not None and (
+                not isinstance(max_extract_bytes, int)
+                or isinstance(max_extract_bytes, bool)
+                or max_extract_bytes < 1
+            ):
+                raise ValidationError(
+                    f"install.maxExtractBytes no es válido en {path}"
+                )
             validation = install["validation"]
             if not isinstance(validation, dict) or validation.get("type") not in {
                 "java-release",
                 "command",
+                "eclipse-package",
                 "files-only",
             }:
                 raise ValidationError(
