@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -22,6 +23,10 @@ from eap import shortcut_entry as shortcut_entry_module
 from eap import transfers as transfers_module
 from eap.application import EapApplication
 from eap.catalog import Catalog, ComponentDefinition
+from eap.component_repositories import (
+    ComponentRepositoryManager,
+    update_component_repository_property,
+)
 from eap.cli import _is_escape, _render_main_dashboard
 from eap.config import DEFAULTS, Settings
 from eap.core_tools import CoreTools
@@ -31,6 +36,11 @@ from eap.host_integrations import HostIntegrationManager
 from eap.installer import ComponentInstaller
 from eap.network import HttpClient
 from eap.paths import EapPaths
+from eap.proxy import (
+    ProxyAuthenticator,
+    ProxyConfiguration,
+    apply_proxy_environment,
+)
 from eap.releases import (
     ASSET_TEMPLATE,
     EapReleasePublisher,
@@ -505,6 +515,7 @@ def dbeaver_component(manifest_path: Path) -> ComponentDefinition:
         ],
         "defaultProvider": "community",
         "defaultTrack": "26.1",
+        "updatePolicy": "same-track",
         "providers": [
             {
                 "id": "community",
@@ -1269,6 +1280,245 @@ class BootstrapTests(unittest.TestCase):
             )
 
 
+class ComponentRepositoryTests(unittest.TestCase):
+    _REVISION = "a" * 40
+
+    @staticmethod
+    def _copy_bundled_catalog(paths: EapPaths) -> None:
+        source = Path(__file__).resolve().parents[1] / "catalog"
+        shutil.copytree(source, paths.catalog.parent)
+
+    @staticmethod
+    def _bruno_manifest() -> str:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "catalog"
+            / "components"
+            / "bruno.json"
+        )
+        return path.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _catalog(manifest: str = "components/bruno.json") -> str:
+        return json.dumps(
+            {
+                "schemaVersion": 1,
+                "catalogVersion": "1.0.0",
+                "components": [
+                    {"id": "bruno", "manifest": manifest}
+                ],
+            }
+        )
+
+    @classmethod
+    def _client(cls, catalog: str | None = None) -> Any:
+        catalog_text = catalog or cls._catalog()
+        manifest_text = cls._bruno_manifest()
+
+        class Client:
+            @staticmethod
+            def get_json(url: str, maximum_bytes: int = 0) -> Any:
+                return {"commit": {"sha": cls._REVISION}}
+
+            @staticmethod
+            def get_text(url: str, maximum_bytes: int = 0) -> str:
+                if url.endswith("/catalog.json"):
+                    return catalog_text
+                if url.endswith("/components/bruno.json"):
+                    return manifest_text
+                raise AssertionError(f"URL inesperada: {url}")
+
+        return Client()
+
+    def test_refreshes_pinned_catalog_and_reuses_it_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            self._copy_bundled_catalog(paths)
+            settings = Settings(
+                {
+                    "components.repository.official": (
+                        "https://github.com/example/eap-components"
+                    )
+                }
+            )
+            manager = ComponentRepositoryManager(
+                paths, settings, self._client()
+            )
+
+            catalog = manager.refresh()
+            component = catalog.component("bruno")
+
+            self.assertEqual("official", component.source_id)
+            self.assertEqual(self._REVISION, component.source.revision)
+            self.assertTrue(component.manifest_path.is_file())
+            self.assertEqual(
+                self._REVISION,
+                manager.cached_sources()[0]["revision"],
+            )
+
+            class OfflineClient:
+                @staticmethod
+                def get_json(*args: Any, **kwargs: Any) -> Any:
+                    raise AssertionError("No debe consultar la red")
+
+                @staticmethod
+                def get_text(*args: Any, **kwargs: Any) -> str:
+                    raise AssertionError("No debe consultar la red")
+
+            offline = ComponentRepositoryManager(
+                paths, settings, OfflineClient()
+            ).load()
+            self.assertEqual("official", offline.component("bruno").source_id)
+
+            changed_settings = Settings(
+                {
+                    "components.repository.official": (
+                        "https://github.com/example/other-components"
+                    )
+                }
+            )
+            changed = ComponentRepositoryManager(
+                paths, changed_settings, OfflineClient()
+            )
+            self.assertEqual(
+                "builtin", changed.load().component("bruno").source_id
+            )
+            self.assertIsNone(changed.cached_sources()[0]["revision"])
+
+    def test_rejects_manifest_traversal_and_cross_repository_collisions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            self._copy_bundled_catalog(paths)
+            invalid_settings = Settings(
+                {
+                    "components.repository.invalid": (
+                        "https://github.com/example/invalid"
+                    )
+                }
+            )
+            invalid = ComponentRepositoryManager(
+                paths,
+                invalid_settings,
+                self._client(self._catalog("../bruno.json")),
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "Ruta de manifiesto no válida"
+            ):
+                invalid.refresh()
+
+            duplicate_settings = Settings(
+                {
+                    "components.repository.first": (
+                        "https://github.com/example/first"
+                    ),
+                    "components.repository.second": (
+                        "https://github.com/example/second"
+                    ),
+                }
+            )
+            duplicate = ComponentRepositoryManager(
+                paths, duplicate_settings, self._client()
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "publicado por dos repositorios"
+            ):
+                duplicate.refresh()
+            self.assertFalse(
+                (
+                    paths.data
+                    / "component-catalogs"
+                    / "first"
+                    / "active.json"
+                ).exists()
+            )
+            self.assertFalse(
+                (
+                    paths.data
+                    / "component-catalogs"
+                    / "second"
+                    / "active.json"
+                ).exists()
+            )
+
+    def test_lock_records_repository_manifest_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            self._copy_bundled_catalog(paths)
+            settings = Settings(
+                {
+                    "components.repository.official": (
+                        "https://github.com/example/eap-components"
+                    )
+                }
+            )
+            component = ComponentRepositoryManager(
+                paths, settings, self._client()
+            ).refresh().component("bruno")
+            store = EnvironmentStore(paths)
+            store.create("default")
+            install_path = paths.components / "bruno" / "community" / "4.0.0"
+            install_path.mkdir(parents=True)
+            artifact = ResolvedArtifact(
+                family="bruno",
+                component_id="bruno-community",
+                provider="community",
+                provider_name="Bruno Community",
+                track=4,
+                version="4.0.0",
+                url="https://example.test/bruno.zip",
+                file_name="bruno.zip",
+                sha256="b" * 64,
+                size=1,
+                metadata_url="https://example.test/release.json",
+            )
+
+            store.publish_component(
+                "default",
+                artifact,
+                install_path,
+                sha256_file(component.manifest_path),
+                manifest_source=component.manifest_source(),
+            )
+
+            locked = store.read_lock("default")["components"][0]
+            self.assertEqual("official", locked["manifestSource"]["id"])
+            self.assertEqual(
+                self._REVISION,
+                locked["manifestSource"]["revision"],
+            )
+            self.assertEqual(
+                "components/bruno.json",
+                locked["manifestSource"]["manifest"],
+            )
+
+    def test_repository_property_can_override_and_disable_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.properties"
+            path.write_text("profile.default=default\n", encoding="utf-8")
+
+            update_component_repository_property(
+                path,
+                "official",
+                "https://github.com/example/eap-components",
+            )
+            self.assertIn(
+                "components.repository.official=https://github.com/"
+                "example/eap-components",
+                path.read_text(encoding="utf-8"),
+            )
+
+            update_component_repository_property(path, "official", "")
+            self.assertIn(
+                "components.repository.official=",
+                path.read_text(encoding="utf-8"),
+            )
+
+
 class SettingsTests(unittest.TestCase):
     def test_profile_default_and_environment_alias_are_bidirectional(
         self,
@@ -1286,6 +1536,168 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(
                 "modern", new_settings.get("environment.default")
             )
+
+
+class ProxyTests(unittest.TestCase):
+    def test_applies_standard_proxy_variables_and_redacts_credentials(
+        self,
+    ) -> None:
+        properties = {
+            "http_proxy": "http://domain%5Cuser:secret@proxy.example:8080",
+            "https_proxy": "http://proxy.example:8080",
+            "no_proxy": "localhost,127.0.0.1,.internal.example",
+        }
+        environment = {"HTTP_PROXY": "http://old.example:3128"}
+
+        configured = apply_proxy_environment(environment, properties)
+        configuration = ProxyConfiguration.from_properties(properties)
+        status = configuration.status()
+
+        self.assertEqual(properties["http_proxy"], configured["http_proxy"])
+        self.assertEqual(environment["http_proxy"], environment["HTTP_PROXY"])
+        self.assertEqual(
+            properties["https_proxy"], environment["HTTPS_PROXY"]
+        )
+        self.assertEqual(properties["no_proxy"], environment["NO_PROXY"])
+        self.assertNotIn("secret", str(status))
+        self.assertIn("***:***@proxy.example:8080", str(status))
+
+    def test_empty_proxy_property_removes_inherited_value(self) -> None:
+        environment = {
+            "http_proxy": "http://old.example:3128",
+            "HTTP_PROXY": "http://other.example:3128",
+        }
+
+        apply_proxy_environment(environment, {"http_proxy": ""})
+
+        self.assertNotIn("http_proxy", environment)
+        self.assertNotIn("HTTP_PROXY", environment)
+
+    def test_authentication_requires_proxy_and_portal_url(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "requiere configurar http_proxy"
+        ):
+            ProxyConfiguration.from_properties(
+                {"enable_proxy_authentication": "true"}
+            )
+        with self.assertRaisesRegex(
+            ValidationError, "requiere proxy_authentication_url"
+        ):
+            ProxyConfiguration.from_properties(
+                {
+                    "http_proxy": "http://proxy.example:8080",
+                    "enable_proxy_authentication": "true",
+                }
+            )
+
+    def test_post_authentication_replays_hidden_form_fields_securely(
+        self,
+    ) -> None:
+        configuration = ProxyConfiguration.from_properties(
+            {
+                "http_proxy": "http://proxy.example:8080",
+                "https_proxy": "http://proxy.example:8080",
+                "enable_proxy_authentication": "true",
+                "proxy_authentication_type": "post",
+                "proxy_authentication_url": "https://portal.example/start",
+                "proxy_authentication_check_url": (
+                    "https://check.example/connect"
+                ),
+                "proxy_authentication_form_field.4Tmthd": "0",
+            }
+        )
+        login_form = """
+            <html><form action="https://portal.example/login" method="post">
+              <input type="hidden" name="magic" value="token-123">
+              <input type="hidden" name="4Tredir" value="target-value">
+              <input type="text" name="username">
+              <input type="password" name="password">
+            </form></html>
+        """
+        calls: list[tuple[str, str, bytes | None]] = []
+        check_count = 0
+
+        def transport(
+            method: str,
+            url: str,
+            data: bytes | None,
+            headers: dict[str, str],
+        ) -> SimpleNamespace:
+            nonlocal check_count
+            calls.append((method, url, data))
+            if url == "https://check.example/connect":
+                check_count += 1
+                body = login_form if check_count == 1 else "connected"
+                return SimpleNamespace(status=200, url=url, body=body)
+            if method == "GET":
+                return SimpleNamespace(status=200, url=url, body=login_form)
+            return SimpleNamespace(status=204, url=url, body="")
+
+        messages: list[str] = []
+        with patch.dict(os.environ, {}, clear=True):
+            authenticator = ProxyAuthenticator(
+                configuration,
+                user_agent="EAP/test",
+                status=messages.append,
+                username_reader=lambda prompt: "domain\\alice",
+                password_reader=lambda prompt: "secret & value",
+                transport=transport,
+            )
+            result = authenticator.ensure_authenticated()
+            marker = os.environ.get("EAP_PROXY_AUTHENTICATED")
+
+        post_call = next(call for call in calls if call[0] == "POST")
+        fields = urllib.parse.parse_qs(
+            (post_call[2] or b"").decode("utf-8")
+        )
+        self.assertTrue(result.authenticated)
+        self.assertEqual("authenticated", result.state)
+        self.assertEqual(configuration.session_token, marker)
+        self.assertEqual(["token-123"], fields["magic"])
+        self.assertEqual(["target-value"], fields["4Tredir"])
+        self.assertEqual(["0"], fields["4Tmthd"])
+        self.assertEqual(["domain\\alice"], fields["username"])
+        self.assertEqual(["secret & value"], fields["password"])
+        self.assertNotIn("secret & value", " ".join(messages))
+
+    def test_browser_authentication_opens_portal_and_checks_connection(
+        self,
+    ) -> None:
+        configuration = ProxyConfiguration.from_properties(
+            {
+                "http_proxy": "http://proxy.example:8080",
+                "enable_proxy_authentication": "true",
+                "proxy_authentication_type": "browser",
+                "proxy_authentication_url": "https://portal.example/login",
+                "proxy_authentication_check_url": "https://check.example/",
+            }
+        )
+        responses = iter(
+            (
+                SimpleNamespace(
+                    status=200,
+                    url="https://portal.example/login",
+                    body='<form><input type="password" name="password"></form>',
+                ),
+                SimpleNamespace(
+                    status=204,
+                    url="https://check.example/",
+                    body="",
+                ),
+            )
+        )
+        opened: list[str] = []
+        with patch.dict(os.environ, {}, clear=True):
+            result = ProxyAuthenticator(
+                configuration,
+                user_agent="EAP/test",
+                browser_open=lambda url: opened.append(url) or True,
+                pause_reader=lambda prompt: "",
+                transport=lambda method, url, data, headers: next(responses),
+            ).ensure_authenticated()
+
+        self.assertTrue(result.authenticated)
+        self.assertEqual(["https://portal.example/login"], opened)
 
 
 class ResolverTests(unittest.TestCase):
@@ -2180,6 +2592,45 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual("https://global.example", environment["API_URL"])
             self.assertEqual("local", environment["SHARED_TOKEN"])
             self.assertEqual("private", environment["PROJECT_TOKEN"])
+
+    def test_global_proxy_properties_are_published_on_profile_activation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            paths.config.write_text(
+                "http_proxy=http://proxy.internal:8080\n"
+                "https_proxy=http://proxy.internal:8080\n"
+                "no_proxy=localhost,127.0.0.1,.internal\n",
+                encoding="utf-8",
+            )
+            store = EnvironmentStore(paths)
+            store.create("default")
+            with patch.dict(
+                os.environ,
+                {
+                    "PATH": r"C:\Windows\System32",
+                    "HTTP_PROXY": "http://host-proxy:3128",
+                },
+                clear=True,
+            ):
+                environment = store.build_process_environment(
+                    "default", Catalog(paths, {}, {})
+                )
+
+            self.assertEqual(
+                "http://proxy.internal:8080", environment["http_proxy"]
+            )
+            self.assertEqual(
+                environment["http_proxy"], environment["HTTP_PROXY"]
+            )
+            self.assertEqual(
+                environment["https_proxy"], environment["HTTPS_PROXY"]
+            )
+            self.assertEqual(
+                "localhost,127.0.0.1,.internal", environment["NO_PROXY"]
+            )
 
     def test_environment_config_cannot_replace_portability_variables(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

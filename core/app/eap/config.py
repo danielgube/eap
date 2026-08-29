@@ -9,6 +9,13 @@ DEFAULTS: dict[str, str] = {
     "profile.default": "default",
     "environment.default": "default",
     "network.timeoutSeconds": "20",
+    "enable_proxy_authentication": "false",
+    "proxy_authentication_type": "post",
+    "proxy_authentication_timeout_seconds": "20",
+    "proxy_authentication_verify_tls": "true",
+    "proxy_authentication_require_https": "true",
+    "proxy_authentication_username_field": "username",
+    "proxy_authentication_password_field": "password",
     "update.checkOnStartup": "true",
     "update.checkIntervalHours": "24",
     "download.keepArchives": "true",
@@ -16,6 +23,9 @@ DEFAULTS: dict[str, str] = {
     "install.maxCompressionRatio": "200",
     "transfer.maxExtractBytes": str(50 * 1024 * 1024 * 1024),
     "transfer.maxFiles": "500000",
+    "components.repository.danielgube": (
+        "https://github.com/danielgube/eap-components"
+    ),
     "pocketools.repository.danielgube": (
         "https://github.com/danielgube/eap-pocketools"
     ),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +29,29 @@ PROFILE_ENVIRONMENT_VARIABLES = {
 
 
 @dataclass(frozen=True)
+class ComponentCatalogSource:
+    id: str
+    repository_url: str
+    catalog_url: str
+    revision: str
+    source_type: str
+
+    def as_json(self) -> dict[str, str]:
+        return {
+            "id": self.id,
+            "repositoryUrl": self.repository_url,
+            "catalogUrl": self.catalog_url,
+            "revision": self.revision,
+            "sourceType": self.source_type,
+        }
+
+
+@dataclass(frozen=True)
 class ComponentDefinition:
     manifest_path: Path
     value: dict[str, Any]
+    source: ComponentCatalogSource | None = None
+    repository_manifest: str | None = None
 
     @property
     def id(self) -> str:
@@ -52,6 +72,18 @@ class ComponentDefinition:
     @property
     def is_external(self) -> bool:
         return self.kind == "external"
+
+    @property
+    def source_id(self) -> str:
+        return self.source.id if self.source is not None else "builtin"
+
+    def manifest_source(self) -> dict[str, str] | None:
+        if self.source is None:
+            return None
+        return {
+            **self.source.as_json(),
+            "manifest": self.repository_manifest or self.manifest_path.name,
+        }
 
     @property
     def providers(self) -> list[dict[str, Any]]:
@@ -85,10 +117,21 @@ class Catalog:
     paths: EapPaths
     value: dict[str, Any]
     definitions: dict[str, ComponentDefinition]
+    sources: dict[str, ComponentCatalogSource] = field(default_factory=dict)
 
     @classmethod
     def load(cls, paths: EapPaths) -> "Catalog":
-        value = load_json(paths.catalog)
+        return cls.load_from_path(paths, paths.catalog)
+
+    @classmethod
+    def load_from_path(
+        cls,
+        paths: EapPaths,
+        catalog_path: Path,
+        source: ComponentCatalogSource | None = None,
+    ) -> "Catalog":
+        catalog_path = paths.require_within_root(catalog_path)
+        value = load_json(catalog_path)
         require_fields(value, ("schemaVersion", "catalogVersion", "components"), "catálogo")
         if value["schemaVersion"] != 1:
             raise ValidationError(
@@ -104,21 +147,28 @@ class Catalog:
                 raise ValidationError("Entrada de catálogo no válida")
             require_fields(entry, ("id", "manifest"), "entrada de catálogo")
             component_id = validate_id(str(entry["id"]), "id de componente")
+            manifest_name = str(entry["manifest"])
             manifest_path = paths.require_within_root(
-                paths.catalog.parent / str(entry["manifest"])
+                catalog_path.parent / manifest_name
             )
             try:
-                manifest_path.relative_to(paths.catalog.parent)
+                manifest_path.relative_to(catalog_path.parent)
             except ValueError as exc:
                 raise ValidationError(
-                    f"El manifiesto sale de core/catalog: {manifest_path}"
+                    f"El manifiesto sale de su catálogo: {manifest_path}"
                 ) from exc
             manifest = load_json(manifest_path)
             cls._validate_component(manifest, component_id, manifest_path)
             if component_id in definitions:
                 raise ValidationError(f"Componente duplicado: {component_id}")
-            definitions[component_id] = ComponentDefinition(manifest_path, manifest)
-        return cls(paths, value, definitions)
+            definitions[component_id] = ComponentDefinition(
+                manifest_path,
+                manifest,
+                source,
+                manifest_name.replace("\\", "/"),
+            )
+        sources = {source.id: source} if source is not None else {}
+        return cls(paths, value, definitions, sources)
 
     @staticmethod
     def _validate_component(
@@ -134,6 +184,9 @@ class Catalog:
                 "launchers",
                 "tracks",
                 "providers",
+                "defaultProvider",
+                "defaultTrack",
+                "updatePolicy",
                 "install",
                 "environment",
             ),
@@ -532,6 +585,21 @@ class Catalog:
                 raise ValidationError(
                     f"Resolver externo no válido para {provider_id!r} en {path}"
                 )
+        if str(value["defaultProvider"]) not in provider_ids:
+            raise ValidationError(
+                f"Proveedor predeterminado no definido en {path}: "
+                f"{value['defaultProvider']!r}"
+            )
+        if str(value["defaultTrack"]) not in track_ids:
+            raise ValidationError(
+                f"Línea predeterminada no definida en {path}: "
+                f"{value['defaultTrack']!r}"
+            )
+        if value["updatePolicy"] not in {"manual", "same-track"}:
+            raise ValidationError(
+                f"Política de actualización no válida en {path}: "
+                f"{value['updatePolicy']!r}"
+            )
 
     def component(self, component_id: str) -> ComponentDefinition:
         try:

@@ -103,6 +103,8 @@ Comandos útiles:
     eap.cmd tool export
     eap.cmd tool export eap-offline --include-components
     eap.cmd tool clean-temp
+    eap.cmd proxy status
+    eap.cmd proxy authenticate
     eap.cmd update --check
     eap.cmd update --yes
     eap.cmd component resolve java --provider temurin --track 21
@@ -120,6 +122,9 @@ Comandos útiles:
     eap.cmd component install eclipse --provider java --track 2026-06 --profile desarrollo
     eap.cmd component install eclipse --provider enterprise-java --track 2026-06 --profile desarrollo
     eap.cmd component install intellij-idea --track 2026.2 --profile desarrollo
+    eap.cmd component refresh
+    eap.cmd component repository list
+    eap.cmd component repository add empresa https://github.com/empresa/eap-components
     eap.cmd component list
     eap.cmd component check-updates --profile desarrollo
     eap.cmd component update java --profile desarrollo
@@ -227,6 +232,38 @@ locales existentes. Un payload antiguo sin origen conocido sigue pudiendo
 activarse, pero la interfaz lo identifica como `sólo disponible localmente`: si
 posteriormente se elimina, no podrá restaurarse exactamente desde el lock y habrá
 que instalar o actualizar el componente desde el catálogo.
+
+### Repositorios de componentes
+
+El catálogo oficial vive en
+`https://github.com/danielgube/eap-components` y se configura de forma
+predeterminada mediante:
+
+    components.repository.danielgube=https://github.com/danielgube/eap-components
+
+`component refresh` resuelve la rama `main` a un commit inmutable, descarga y
+valida `catalog.json` y todos sus manifiestos, y sólo después activa la nueva
+revisión en `data/component-catalogs`. Los siguientes arranques usan esa caché
+sin consultar la red. El snapshot bajo `core/catalog` permanece como bootstrap y
+respaldo offline cuando todavía no se ha actualizado ningún repositorio.
+
+Se pueden añadir fuentes GitHub o una URL HTTPS directa a `catalog.json`:
+
+    eap.cmd component repository list
+    eap.cmd component repository add empresa https://github.com/empresa/eap-components
+    eap.cmd component refresh empresa
+    eap.cmd component repository remove empresa
+
+Los repositorios externos pueden añadir IDs nuevos. Si dos repositorios externos
+publican el mismo ID, EAP rechaza la composición completa en lugar de elegir uno
+silenciosamente. Una definición externa sí sustituye al snapshot integrado del
+mismo componente: éste es el mecanismo con el que el catálogo oficial queda
+desacoplado del ciclo de releases de EAP.
+
+El lock de cada componente conserva repositorio, revisión, ruta y hash del
+manifiesto que lo activó. En esta primera fase los catálogos son exclusivamente
+declarativos y sólo pueden seleccionar resolvers y validadores incluidos en EAP;
+no se descarga ni ejecuta Python desde repositorios de componentes.
 
 La pantalla principal muestra el tamaño y número de archivos de `temp`. La acción
 `Opciones avanzadas > [4] Limpiar temporales` y `tool clean-temp` eliminan
@@ -456,6 +493,59 @@ La carpeta
 launcher o un comando generado la necesita; no es obligatoria para todos los
 componentes.
 
+### Proxy corporativo y autenticación
+
+EAP reconoce directamente en el `config.properties` general las variables
+estándar `http_proxy`, `https_proxy`, `all_proxy` y `no_proxy`. Cuando alguna
+está declarada, la aplica antes de crear sus clientes de red y publica tanto la
+variante en minúsculas como en mayúsculas en shells, Windows Terminal,
+Pocketools y aplicaciones del profile. Una propiedad vacía elimina la variable
+heredada del proceso anfitrión.
+
+Configuración mínima:
+
+    http_proxy=http://proxy.organizacion.example:8080
+    https_proxy=http://proxy.organizacion.example:8080
+    no_proxy=localhost,127.0.0.1,.organizacion.example
+
+Los proxies HTTP Basic que acepten credenciales embebidas pueden usar una URL
+como `http://usuario:password@servidor:puerto`, codificando usuario y contraseña
+para URL. Ese mecanismo deja el secreto en `config.properties`; EAP oculta las
+credenciales en `proxy status`, pero para un portal interactivo resulta más
+seguro habilitar la autenticación POST:
+
+    enable_proxy_authentication=true
+    proxy_authentication_type=post
+    proxy_authentication_url=http://www.example.com/
+    proxy_authentication_check_url=https://www.example.com/
+    proxy_authentication_username_field=username
+    proxy_authentication_password_field=password
+    proxy_authentication_form_field.4Tmthd=0
+
+EAP sigue las redirecciones de `proxy_authentication_url`, localiza el formulario
+que contiene el password, conserva sus campos ocultos —por ejemplo `magic` y
+`4Tredir`—, solicita usuario y contraseña sin mostrar esta última y ejecuta el
+POST indicado por el propio formulario. Las credenciales sólo viven en memoria:
+no se escriben archivos temporales ni se muestran en estado, JSON o logs. Si se
+configura `proxy_authentication_check_url`, EAP evita pedirlas cuando la sesión
+ya tiene Internet y verifica de nuevo el acceso después del POST.
+Los valores `proxy_authentication_form_field.<nombre>` permiten añadir campos
+fijos que un portal heredado espere pero no publique como inputs del formulario.
+
+Para portales que se completan manualmente en el navegador se puede usar
+`proxy_authentication_type=browser`; EAP abre la URL, espera confirmación y
+realiza la misma comprobación final. `proxy_authentication_verify_tls=false`
+permite tratar excepcionalmente un portal con certificado no confiable, pero
+sólo debe usarse cuando la política de la organización lo requiera. Por defecto
+el POST de credenciales debe usar HTTPS; un portal heredado que sólo admita HTTP
+requiere aceptar expresamente el riesgo con
+`proxy_authentication_require_https=false`.
+
+La autenticación se ejecuta de forma perezosa al resolver o descargar contenido,
+abrir un shell, iniciar Windows Terminal o lanzar una aplicación. También puede
+forzarse con `eap proxy authenticate --force`; `eap proxy status` muestra la
+configuración efectiva con cualquier credencial censurada.
+
 ### Bruno
 
 Bruno se instala desde el ZIP portable oficial de Windows x64 en
@@ -622,8 +712,9 @@ repositorios públicos.
 - core/app/eap: motor de EAP;
 - core/app/eap/shortcuts.py: generación controlada de accesos directos Windows;
 - core/catalog/host-integrations.json: catálogo de integraciones explícitas con el host;
-- core/catalog.json: catálogo general;
-- components/*_eap_component.json: contratos de familias;
+- core/catalog/catalog.json: snapshot de bootstrap del catálogo oficial;
+- core/catalog/components: manifiestos de bootstrap incluidos con EAP;
+- data/component-catalogs: revisiones inmutables de los repositorios externos;
 - components/java/<proveedor>/<version>: instalaciones compartidas;
 - components/maven/apache/<version>: instalaciones Maven compartidas;
 - components/git/git-for-windows/<version>: instalaciones MinGit compartidas;

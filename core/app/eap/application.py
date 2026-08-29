@@ -12,7 +12,11 @@ from uuid import uuid4
 
 from . import __version__
 from .catalog import Catalog, ComponentDefinition
-from .config import DEFAULTS, Settings
+from .component_repositories import (
+    ComponentRepositoryManager,
+    update_component_repository_property,
+)
+from .config import DEFAULTS, Settings, load_properties
 from .console import console_title
 from .core_tools import CoreTools
 from .environments import EnvironmentStore
@@ -31,6 +35,12 @@ from .pocketools import (
     PocketToolInstallResult,
     PocketToolManager,
     update_repository_property,
+)
+from .proxy import (
+    ProxyAuthenticationResult,
+    ProxyAuthenticator,
+    ProxyConfiguration,
+    apply_proxy_environment,
 )
 from .releases import (
     EapReleasePublisher,
@@ -156,16 +166,32 @@ class EapApplication:
         self.paths.ensure_layout()
         self.status = status or (lambda message: None)
         self.settings = Settings.load(self.paths.config)
-        self.catalog = Catalog.load(self.paths)
+        declared_settings = load_properties(self.paths.config)
+        self.proxy_configuration = ProxyConfiguration.from_properties(
+            self.settings.values
+        )
+        apply_proxy_environment(os.environ, declared_settings)
+        self.proxy_authenticator = ProxyAuthenticator(
+            self.proxy_configuration,
+            user_agent=f"EAP/{self.version}",
+            status=self.status,
+        )
+        self.client = HttpClient(
+            self.settings.get_int("network.timeoutSeconds", minimum=1),
+            user_agent=f"EAP/{self.version}",
+        )
+        self.component_repositories = ComponentRepositoryManager(
+            self.paths,
+            self.settings,
+            self.client,
+            status=self.status,
+        )
+        self.catalog = self.component_repositories.load()
         self.environments = EnvironmentStore(self.paths)
         self.host_integrations = HostIntegrationManager(
             self.paths, self.environments
         )
         self.core_tools = CoreTools.load(self.paths)
-        self.client = HttpClient(
-            self.settings.get_int("network.timeoutSeconds", minimum=1),
-            user_agent=f"EAP/{self.version}",
-        )
         self.pocketools = PocketToolManager(
             self.paths,
             self.settings,
@@ -202,9 +228,79 @@ class EapApplication:
             )
         return selected
 
+    def proxy_status(self) -> dict[str, object]:
+        configuration = getattr(self, "proxy_configuration", None)
+        authenticator = getattr(self, "proxy_authenticator", None)
+        if configuration is None:
+            configuration = ProxyConfiguration.from_properties({})
+        return configuration.status(
+            authenticated=bool(
+                authenticator is not None and authenticator.authenticated
+            )
+        )
+
+    def authenticate_proxy(
+        self, *, force: bool = False
+    ) -> ProxyAuthenticationResult:
+        authenticator = getattr(self, "proxy_authenticator", None)
+        if authenticator is None:
+            return ProxyAuthenticationResult(
+                "disabled", "No hay un proxy configurado.", False
+            )
+        return authenticator.ensure_authenticated(force=force)
+
+    def _ensure_proxy_authenticated(self) -> None:
+        authenticator = getattr(self, "proxy_authenticator", None)
+        if authenticator is None:
+            return
+        result = authenticator.ensure_authenticated()
+        if result.state in {"authenticated", "already-connected"}:
+            self.status(result.detail)
+
+    def refresh_component_catalogs(
+        self, repository: str | None = None
+    ) -> Catalog:
+        EapApplication._ensure_proxy_authenticated(self)
+        self.catalog = self.component_repositories.refresh(repository)
+        self._reload_pocketool_settings()
+        return self.catalog
+
+    def add_component_repository(
+        self, source_id: str, repository_url: str
+    ) -> None:
+        ComponentRepositoryManager._repository_urls(repository_url)
+        update_component_repository_property(
+            self.paths.config, source_id, repository_url.strip()
+        )
+        self._reload_component_repository_settings()
+
+    def remove_component_repository(self, source_id: str) -> None:
+        source = self.component_repositories.source(source_id)
+        key = f"components.repository.{source.id}"
+        update_component_repository_property(
+            self.paths.config,
+            source.id,
+            "" if key in DEFAULTS else None,
+        )
+        self._reload_component_repository_settings()
+
+    def _reload_component_repository_settings(self) -> None:
+        self.settings = Settings.load(self.paths.config)
+        self.component_repositories = ComponentRepositoryManager(
+            self.paths,
+            self.settings,
+            self.client,
+            status=self.status,
+        )
+        self.catalog = self.component_repositories.load()
+        if hasattr(self, "pocketools"):
+            self._reload_pocketool_settings()
+
     def available_pocketools(
         self, *, refresh: bool = False, require_cache: bool = False
     ) -> list[PocketToolDefinition]:
+        if refresh or not require_cache:
+            EapApplication._ensure_proxy_authenticated(self)
         return self.pocketools.available(
             refresh=refresh,
             require_cache=require_cache,
@@ -213,6 +309,7 @@ class EapApplication:
     def refresh_pocketools(
         self, repository: str | None = None
     ) -> list[PocketToolDefinition]:
+        EapApplication._ensure_proxy_authenticated(self)
         return self.pocketools.refresh(repository)
 
     def install_pocketool(
@@ -222,6 +319,7 @@ class EapApplication:
         *,
         refresh: bool = True,
     ) -> list[PocketToolInstallResult]:
+        EapApplication._ensure_proxy_authenticated(self)
         profile_id = environment_id or self.active_profile_id()
         plan = self.pocketools.resolve_installation_plan(
             selector, refresh=refresh
@@ -286,6 +384,7 @@ class EapApplication:
         arguments: list[str],
         environment_id: str | None = None,
     ) -> int:
+        EapApplication._ensure_proxy_authenticated(self)
         profile_id = environment_id or self.active_profile_id()
         installed = self.pocketools.find_installed(selector)
         self._validate_pocketool_component_requirements(
@@ -392,6 +491,7 @@ class EapApplication:
     def resolve(
         self, component_id: str, provider: str, track: int | str
     ) -> ResolvedArtifact:
+        EapApplication._ensure_proxy_authenticated(self)
         component = self.catalog.component(component_id)
         if component.is_external:
             raise ValidationError(
@@ -408,6 +508,7 @@ class EapApplication:
         artifact: ResolvedArtifact | None = None,
         allow_missing: bool = False,
     ) -> tuple[ResolvedArtifact, Path]:
+        EapApplication._ensure_proxy_authenticated(self)
         self.environments.read_desired(environment_id)
         component = self.catalog.component(component_id)
         if component.is_external:
@@ -445,6 +546,7 @@ class EapApplication:
             resolved,
             install_path,
             manifest_sha256,
+            manifest_source=component.manifest_source(),
         )
         self.environments.build_process_environment(
             environment_id, self.catalog
@@ -488,6 +590,7 @@ class EapApplication:
             component,
             candidate,
             sha256_file(component.manifest_path),
+            manifest_source=component.manifest_source(),
         )
         self.environments.build_process_environment(
             environment_id, self.catalog
@@ -744,6 +847,7 @@ class EapApplication:
             selected.install_path,
             sha256_file(component.manifest_path),
             artifact_restorable=selected.restorable,
+            manifest_source=component.manifest_source(),
         )
         self.environments.build_process_environment(
             environment_id, self.catalog
@@ -1220,6 +1324,7 @@ class EapApplication:
         )
 
     def check_eap_update(self) -> EapUpdateStatus:
+        EapApplication._ensure_proxy_authenticated(self)
         return self.release_updater.check(self.version)
 
     def install_eap_update(
@@ -1229,6 +1334,7 @@ class EapApplication:
         return self.release_updater.install(selected)
 
     def publish_eap_release(self) -> EapReleaseResult:
+        EapApplication._ensure_proxy_authenticated(self)
         publisher = EapReleasePublisher(
             self.paths,
             self.settings.get_int("network.timeoutSeconds", minimum=1),
@@ -1391,6 +1497,7 @@ class EapApplication:
             atomic_write_json(self.update_cache_path, cache)
 
     def open_shell(self, environment_id: str, shell_type: str) -> int:
+        EapApplication._ensure_proxy_authenticated(self)
         process_environment = self.environments.build_process_environment(
             environment_id,
             self.catalog,
@@ -1422,6 +1529,7 @@ class EapApplication:
             )
 
     def start_managed_terminal(self, environment_id: str) -> TerminalLaunch:
+        EapApplication._ensure_proxy_authenticated(self)
         terminal = ManagedTerminal(
             self.paths,
             self.environments,
@@ -1633,6 +1741,7 @@ class EapApplication:
         return result
 
     def launch(self, environment_id: str, launcher_id: str) -> int:
+        EapApplication._ensure_proxy_authenticated(self)
         matches = [
             launcher
             for launcher in self.available_launchers(environment_id)
@@ -1761,6 +1870,33 @@ class EapApplication:
             "ok",
             f"{len(self.catalog.definitions)} componente(s) válido(s)",
         )
+        component_sources = self.component_repositories.cached_sources()
+        cached_component_sources = [
+            source for source in component_sources if source["revision"]
+        ]
+        add(
+            "components:sources",
+            "ok" if cached_component_sources else "warning",
+            (
+                f"{len(cached_component_sources)}/"
+                f"{len(component_sources)} repositorio(s) cacheado(s)"
+                if component_sources
+                else "sin repositorios configurados"
+            ),
+        )
+        proxy = self.proxy_status()
+        if proxy["configured"]:
+            proxy_names = ", ".join(
+                str(name) for name in dict(proxy["proxies"])
+            )
+            authentication = (
+                f"; autenticación {proxy['authenticationType']}"
+                if proxy["authenticationEnabled"]
+                else "; sin autenticación interactiva"
+            )
+            add("proxy", "ok", proxy_names + authentication)
+        else:
+            add("proxy", "ok", "conexión directa; sin proxy configurado")
         try:
             sources = self.pocketools.sources()
             add(

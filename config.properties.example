@@ -7,6 +7,43 @@ update.checkOnStartup=true
 update.checkIntervalHours=24
 download.keepArchives=true
 
+# Proxy corporativo global. EAP publica las variantes en mayúsculas y
+# minúsculas para sus descargas y para todos los procesos del profile.
+# Deje una propiedad declarada pero vacía para eliminar un proxy heredado.
+# http_proxy=http://proxy.organizacion.example:8080
+# https_proxy=http://proxy.organizacion.example:8080
+# all_proxy=http://proxy.organizacion.example:8080
+# no_proxy=localhost,127.0.0.1,.organizacion.example
+
+# Si el proxy acepta credenciales en la URL, use el formato estándar
+# http://usuario:password@servidor:puerto con usuario/password URL-encoded.
+# Esto guarda el secreto en disco; para portales interactivos es preferible el
+# modo POST, que solicita las credenciales en cada sesión y no las persiste.
+enable_proxy_authentication=false
+proxy_authentication_type=post
+# Página que presenta o redirige al formulario de autenticación.
+# proxy_authentication_url=http://www.example.com/
+# URL opcional para comprobar la conexión antes y después de autenticarse.
+# proxy_authentication_check_url=https://www.example.com/
+proxy_authentication_username_field=username
+proxy_authentication_password_field=password
+# Campos fijos adicionales que el formulario no publique como inputs ocultos:
+# proxy_authentication_form_field.4Tmthd=0
+proxy_authentication_timeout_seconds=20
+proxy_authentication_verify_tls=true
+proxy_authentication_require_https=true
+
+# Para portales que deben completarse en el navegador de Windows:
+# proxy_authentication_type=browser
+# Use proxy_authentication_verify_tls=false sólo si el portal corporativo
+# emplea un certificado no confiable y la organización lo exige expresamente.
+# Use proxy_authentication_require_https=false sólo si el formulario heredado
+# obliga a enviar credenciales por HTTP y se ha aceptado ese riesgo.
+
+# Catálogo oficial de componentes. EAP conserva un snapshot incluido para
+# bootstrap/offline y usa la revisión cacheada después de `component refresh`.
+components.repository.danielgube=https://github.com/danielgube/eap-components
+
 # Repositorios Pocketools públicos de GitHub. EAP descubre los manifiestos
 # pocketools/*/pocketool.json directamente desde la rama main.
 pocketools.repository.danielgube=https://github.com/danielgube/eap-pocketools

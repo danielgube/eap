@@ -109,6 +109,32 @@ def build_parser() -> argparse.ArgumentParser:
         "list", help="listar componentes del profile"
     )
     _add_profile_argument(component_list)
+    component_refresh = component_subparsers.add_parser(
+        "refresh", help="actualizar los catálogos de componentes"
+    )
+    component_refresh.add_argument("repository", nargs="?")
+    component_refresh.add_argument("--json", action="store_true")
+    component_repository = component_subparsers.add_parser(
+        "repository", help="gestionar repositorios de componentes"
+    )
+    component_repository_subparsers = component_repository.add_subparsers(
+        dest="component_repository_command", required=True
+    )
+    component_repository_list = component_repository_subparsers.add_parser(
+        "list", help="listar repositorios configurados"
+    )
+    component_repository_list.add_argument("--json", action="store_true")
+    component_repository_add = component_repository_subparsers.add_parser(
+        "add", help="añadir un repositorio HTTPS"
+    )
+    component_repository_add.add_argument("id")
+    component_repository_add.add_argument("url")
+    component_repository_add.add_argument("--yes", action="store_true")
+    component_repository_remove = component_repository_subparsers.add_parser(
+        "remove", help="quitar un repositorio"
+    )
+    component_repository_remove.add_argument("id")
+    component_repository_remove.add_argument("--yes", action="store_true")
     resolve_parser = component_subparsers.add_parser(
         "resolve", help="resolver la última versión"
     )
@@ -226,6 +252,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     repository_remove.add_argument("id")
     repository_remove.add_argument("--yes", action="store_true")
+
+    proxy_parser = subparsers.add_parser(
+        "proxy", help="consultar o autenticar el proxy corporativo"
+    )
+    proxy_subparsers = proxy_parser.add_subparsers(
+        dest="proxy_command", required=True
+    )
+    proxy_status = proxy_subparsers.add_parser(
+        "status", help="mostrar la configuración proxy efectiva"
+    )
+    proxy_status.add_argument("--json", action="store_true")
+    proxy_authenticate = proxy_subparsers.add_parser(
+        "authenticate", help="validarse ahora en el portal proxy"
+    )
+    proxy_authenticate.add_argument("--force", action="store_true")
+    proxy_authenticate.add_argument("--json", action="store_true")
 
     shell_parser = subparsers.add_parser("shell", help="abrir shell activado")
     _add_profile_argument(shell_parser)
@@ -474,6 +516,41 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
             print("Cierre y vuelva a abrir EAP para aplicar el nuevo código.")
         return 0
 
+    if arguments.command == "proxy":
+        if arguments.proxy_command == "status":
+            status = app.proxy_status()
+            if arguments.json:
+                _print_json(status)
+            else:
+                print(
+                    "Proxy configurado: "
+                    + ("sí" if status["configured"] else "no")
+                )
+                proxies = status["proxies"]
+                if isinstance(proxies, dict):
+                    for name, value in proxies.items():
+                        print(f"{name}: {value}")
+                if status["authenticationEnabled"]:
+                    print(
+                        "Autenticación: "
+                        f"{status['authenticationType']} · "
+                        + (
+                            "sesión activa"
+                            if status["authenticatedInProcess"]
+                            else "pendiente"
+                        )
+                    )
+                else:
+                    print("Autenticación interactiva: desactivada")
+            return 0
+        if arguments.proxy_command == "authenticate":
+            result = app.authenticate_proxy(force=arguments.force)
+            if arguments.json:
+                _print_json(result.as_json())
+            else:
+                print(result.detail)
+            return 0
+
     if arguments.command == "terminal":
         if arguments.terminal_command == "start":
             environment_id = _require_environment(
@@ -697,6 +774,12 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
             {
                 "id": component.id,
                 "name": component.display_name,
+                "source": component.source_id,
+                "revision": (
+                    component.source.revision
+                    if component.source is not None
+                    else None
+                ),
                 "providers": [
                     {
                         "id": provider["id"],
@@ -715,6 +798,7 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
             for component in values:
                 print(
                     f"{component['name']} ({component['id']}) - "
+                    f"fuente: {component['source']} - "
                     f"arrancable: {'sí' if component['launchable'] else 'no'}"
                 )
                 for provider in component["providers"]:
@@ -964,6 +1048,82 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 return 0
 
     if arguments.command == "component":
+        if arguments.component_command == "refresh":
+            catalog = app.refresh_component_catalogs(arguments.repository)
+            values = [
+                {
+                    "id": component.id,
+                    "source": component.source_id,
+                    "revision": (
+                        component.source.revision
+                        if component.source is not None
+                        else None
+                    ),
+                }
+                for component in catalog.definitions.values()
+            ]
+            if arguments.json:
+                _print_json(values)
+            else:
+                repositories = sorted(
+                    {
+                        component.source_id
+                        for component in catalog.definitions.values()
+                        if component.source is not None
+                    },
+                    key=str.casefold,
+                )
+                print(
+                    f"Catálogo actualizado: {len(values)} componente(s) · "
+                    + (", ".join(repositories) or "snapshot incluido")
+                )
+            return 0
+
+        if arguments.component_command == "repository":
+            if arguments.component_repository_command == "list":
+                values = app.component_repositories.cached_sources()
+                if arguments.json:
+                    _print_json(values)
+                elif not values:
+                    print("No hay repositorios de componentes configurados.")
+                else:
+                    for source in values:
+                        revision = source["revision"] or "sin caché"
+                        print(
+                            f"{source['id']} · {source['repositoryUrl']}\n"
+                            f"  revisión: {revision}"
+                        )
+                return 0
+            if arguments.component_repository_command == "add":
+                print(
+                    "Este repositorio podrá publicar manifiestos que controlan "
+                    "qué binarios descarga y ejecuta EAP."
+                )
+                print(f"Repositorio: {arguments.url}")
+                if not arguments.yes and not _confirm(
+                    "¿Confiar y añadir este repositorio?"
+                ):
+                    print("Cancelado.")
+                    return 0
+                app.add_component_repository(arguments.id, arguments.url)
+                print(f"Repositorio añadido: {arguments.id}")
+                print("Use component refresh para descargar su catálogo.")
+                return 0
+            if arguments.component_repository_command == "remove":
+                source = app.component_repositories.source(arguments.id)
+                print(
+                    f"Se quitará la fuente {source.id}: "
+                    f"{source.repository_url}"
+                )
+                if not arguments.yes and not _confirm(
+                    "¿Quitar repositorio?"
+                ):
+                    print("Cancelado.")
+                    return 0
+                app.remove_component_repository(arguments.id)
+                print(f"Repositorio eliminado: {arguments.id}")
+                return 0
+
         if arguments.component_command == "resolve":
             provider, track = _component_selection(app, arguments)
             artifact = app.resolve(

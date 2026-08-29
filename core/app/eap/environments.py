@@ -13,6 +13,7 @@ from .config import load_properties
 from .core_tools import CoreTools
 from .errors import TransactionError, ValidationError
 from .paths import EapPaths
+from .proxy import apply_proxy_environment
 from .resolvers import ResolvedArtifact
 from .util import (
     atomic_write_json,
@@ -356,6 +357,7 @@ class EnvironmentStore:
         install_path: Path,
         manifest_sha256: str,
         artifact_restorable: bool = True,
+        manifest_source: dict[str, str] | None = None,
     ) -> None:
         files = self.files(environment_id)
         desired = self.read_desired(environment_id)
@@ -402,6 +404,8 @@ class EnvironmentStore:
             "metadataUrl": artifact.metadata_url,
             "manifestSha256": manifest_sha256,
         }
+        if manifest_source is not None:
+            locked_component["manifestSource"] = manifest_source
         lock["components"] = [
             item for item in lock["components"] if item.get("id") != artifact.family
         ]
@@ -427,6 +431,7 @@ class EnvironmentStore:
         component: ComponentDefinition,
         executable: Path,
         manifest_sha256: str,
+        manifest_source: dict[str, str] | None = None,
     ) -> None:
         if not component.is_external:
             raise ValidationError(
@@ -470,6 +475,8 @@ class EnvironmentStore:
             },
             "manifestSha256": manifest_sha256,
         }
+        if manifest_source is not None:
+            locked_component["manifestSource"] = manifest_source
         lock["components"] = [
             item
             for item in lock["components"]
@@ -790,6 +797,9 @@ class EnvironmentStore:
             environment_id,
             declared_component_variables,
         )
+        apply_proxy_environment(
+            environment, load_properties(self.paths.config)
+        )
         return environment
 
     def component_data_entries(
@@ -949,6 +959,7 @@ class EnvironmentStore:
             "eap_data_profile",
             "eap_workspace",
             "eap_core_tools",
+            "eap_proxy_authenticated",
             "userprofile",
             "home",
             "appdata",
