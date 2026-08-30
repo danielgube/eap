@@ -1489,6 +1489,10 @@ def _render_main_dashboard(
         app.paths.workspaces / str(desired["workspace"])
     )
     temporary_usage = app.temporary_storage_usage()
+    component_sources = app.component_repositories.cached_sources()
+    cached_component_sources = sum(
+        1 for source in component_sources if source["revision"]
+    )
     inventory = app.inventory(environment_id)
     missing_ids = {
         str(item["id"]) for item in _missing_components(app, environment_id)
@@ -1540,6 +1544,9 @@ def _render_main_dashboard(
                     "Temporales: "
                     f"{_format_bytes(temporary_usage.bytes)} · "
                     f"{temporary_usage.files} archivo(s) · {app.paths.temp}",
+                    "Catálogos: fuente interna · "
+                    f"{len(component_sources)} repositorio(s) externo(s) · "
+                    f"{cached_component_sources} con caché",
                 ],
             ),
         ],
@@ -1829,6 +1836,8 @@ def _interactive_catalog(
                         "[A] Activar componentes disponibles",
                         "[E] Agregar componente externo",
                         "[R] Comprobar actualizaciones",
+                        "[F] Actualizar catálogos desde repositorios",
+                        "[G] Gestionar repositorios",
                         "[Esc] Volver",
                     ],
                 )
@@ -1844,6 +1853,18 @@ def _interactive_catalog(
                 previous=update_status,
                 announce=True,
             )
+            continue
+        if option == "f":
+            print("Actualizando catálogos de componentes...")
+            catalog = app.refresh_component_catalogs()
+            print(
+                f"Catálogos actualizados: {len(catalog.definitions)} "
+                f"componente(s) · {len(catalog.sources)} "
+                "repositorio(s)."
+            )
+            continue
+        if option == "g":
+            _interactive_component_repositories(app)
             continue
         if option == "n":
             if _interactive_install_new_component(app, environment_id):
@@ -1939,6 +1960,102 @@ def _interactive_activate_component(
     return True
 
 
+def _interactive_component_repositories(app: EapApplication) -> None:
+    while True:
+        sources = app.component_repositories.cached_sources()
+        repository_rows: list[str] = []
+        for source in sources:
+            revision = str(source["revision"] or "sin caché")
+            repository_rows.extend(
+                [
+                    f"{source['id']} · {source['repositoryUrl']}",
+                    f"    revisión: {revision}",
+                ]
+            )
+        if not repository_rows:
+            repository_rows = ["(sin repositorios configurados)"]
+        _print_panel(
+            "Catálogo de componentes > Repositorios",
+            [
+                (
+                    "Fuente interna",
+                    ["Incluida con EAP · bootstrap y respaldo offline"],
+                ),
+                ("Repositorios externos", repository_rows),
+                (
+                    "Acciones",
+                    [
+                        "[1] Añadir repositorio",
+                        "[2] Quitar repositorio",
+                        "[3] Actualizar catálogos",
+                        "[Esc] Volver",
+                    ],
+                ),
+            ],
+        )
+        option = _read_input("> ").strip().lower()
+        if _is_escape(option) or option in {"v", "volver", "q"}:
+            return
+        if option == "1":
+            source_id = _read_input("Id corto del repositorio: ").strip()
+            if _is_escape(source_id) or not source_id:
+                continue
+            url = _read_input(
+                "URL HTTPS del repositorio o catalog.json: "
+            ).strip()
+            if _is_escape(url) or not url:
+                continue
+            _print_panel(
+                "Confiar en repositorio de componentes",
+                [
+                    (
+                        "Alcance",
+                        [
+                            f"Id: {source_id}",
+                            f"URL: {url}",
+                            "Podrá publicar definiciones y sustituir las "
+                            "internas con el mismo id.",
+                            "Los catálogos son declarativos; EAP no ejecuta "
+                            "código del repositorio.",
+                        ],
+                    )
+                ],
+            )
+            if _confirm("¿Confiar y añadir este repositorio?"):
+                app.add_component_repository(source_id, url)
+                print(f"Repositorio añadido: {source_id}")
+                print("Use Actualizar catálogos para descargarlo.")
+            continue
+        if option == "2":
+            if not sources:
+                print("No hay repositorios que quitar.")
+                continue
+            choices = [
+                f"[{index}] {source['id']} · {source['repositoryUrl']}"
+                for index, source in enumerate(sources, start=1)
+            ]
+            choices.append("[Esc] Volver")
+            _print_panel("Quitar repositorio", [("Fuentes", choices)])
+            selected_index = _read_index(len(sources))
+            if selected_index is None:
+                continue
+            selected = sources[selected_index]
+            if _confirm(f"¿Quitar el repositorio {selected['id']}?"):
+                app.remove_component_repository(str(selected["id"]))
+                print(f"Repositorio eliminado: {selected['id']}")
+            continue
+        if option == "3":
+            print("Actualizando catálogos de componentes...")
+            catalog = app.refresh_component_catalogs()
+            print(
+                f"Catálogos actualizados: {len(catalog.definitions)} "
+                f"componente(s) · {len(catalog.sources)} "
+                "repositorio(s)."
+            )
+            continue
+        print("Opción no válida.")
+
+
 def _interactive_install_new_component(
     app: EapApplication, environment_id: str
 ) -> bool:
@@ -1970,7 +2087,8 @@ def _interactive_install_new_component(
         _read_input("> ")
         return False
     rows = [
-        f"[{index}] {component.display_name}"
+        f"[{index}] {component.display_name} · "
+        f"Fuente: {_component_source_label(component)}"
         for index, component in enumerate(available, start=1)
     ]
     rows.append("[Esc] Volver")
@@ -2014,7 +2132,8 @@ def _interactive_add_external_component(
         _read_input("> ")
         return False
     rows = [
-        f"[{index}] {component.display_name}"
+        f"[{index}] {component.display_name} · "
+        f"Fuente: {_component_source_label(component)}"
         for index, component in enumerate(available, start=1)
     ]
     rows.append("[Esc] Volver")
@@ -2147,6 +2266,7 @@ def _interactive_component_actions(
         _print_panel(
             f"Catálogo > {component.display_name}",
             [
+                ("Fuente", _component_source_rows(component)),
                 (
                     "Selección activa",
                     (
@@ -2384,6 +2504,7 @@ def _interactive_update_component(
             (
                 "",
                 [
+                    f"Fuente: {_component_source_label(component)}",
                     f"Actual: {update.current_version}",
                     f"Nueva: {update.latest.version}",
                     f"Proveedor: {update.latest.provider_name}",
@@ -2439,7 +2560,10 @@ def _interactive_install_component(
         provider_rows.append("[Esc] Volver al catálogo")
         _print_panel(
             f"Catálogo > {component.display_name}",
-            [("Proveedor", provider_rows)],
+            [
+                ("Fuente", _component_source_rows(component)),
+                ("Proveedor", provider_rows),
+            ],
         )
         provider_index = _read_index(len(component.providers))
         if provider_index is None:
@@ -2506,6 +2630,7 @@ def _interactive_install_component(
                 continue
 
             plan_rows = [
+                f"Fuente: {_component_source_label(component)}",
                 f"Nueva: {provider_definition['displayName']} · "
                 f"{_track_display(component, track)} · {artifact.version}"
             ]
@@ -2550,6 +2675,24 @@ def _active_component(
         if item.get("id") == component_id:
             return item
     return None
+
+
+def _component_source_label(component: Any) -> str:
+    source = getattr(component, "source", None)
+    if source is None:
+        return "interna (incluida con EAP)"
+    return f"repositorio {source.id}"
+
+
+def _component_source_rows(component: Any) -> list[str]:
+    source = getattr(component, "source", None)
+    if source is None:
+        return ["Interna · incluida con EAP"]
+    return [
+        f"Repositorio: {source.id}",
+        f"URL: {source.repository_url}",
+        f"Revisión: {source.revision}",
+    ]
 
 
 def _track_display(component: Any, track_id: int | str) -> str:
@@ -2682,6 +2825,8 @@ def _colorize_panel_row(row: str, content: str) -> str:
         "[9]",
         "[A]",
         "[E]",
+        "[F]",
+        "[G]",
         "[N]",
         "[R]",
         "[Esc]",

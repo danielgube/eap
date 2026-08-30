@@ -22,7 +22,7 @@ from eap import cli as cli_module
 from eap import shortcut_entry as shortcut_entry_module
 from eap import transfers as transfers_module
 from eap.application import EapApplication
-from eap.catalog import Catalog, ComponentDefinition
+from eap.catalog import Catalog, ComponentCatalogSource, ComponentDefinition
 from eap.component_repositories import (
     ComponentRepositoryManager,
     update_component_repository_property,
@@ -5659,6 +5659,129 @@ class InterfaceTests(unittest.TestCase):
                 "Java 21 LTS · activo · 21.0.12+8",
                 rendered,
             )
+            self.assertIn("Interna · incluida con EAP", rendered)
+
+    def test_component_flow_shows_repository_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            bundled = java_component(Path(temporary) / "java.json")
+            component = ComponentDefinition(
+                bundled.manifest_path,
+                bundled.value,
+                ComponentCatalogSource(
+                    "empresa",
+                    "https://github.com/empresa/eap-components",
+                    "https://example.test/catalog.json",
+                    "a" * 40,
+                    "github",
+                ),
+                "components/java.json",
+            )
+            app = SimpleNamespace(inventory=lambda environment_id: [])
+            output = StringIO()
+            with (
+                patch.object(
+                    cli_module, "_read_input", return_value="\x1b"
+                ),
+                redirect_stdout(output),
+            ):
+                installed = cli_module._interactive_install_component(
+                    app, "default", component
+                )
+
+            rendered = output.getvalue()
+            self.assertFalse(installed)
+            self.assertIn("Repositorio: empresa", rendered)
+            self.assertIn(
+                "URL: https://github.com/empresa/eap-components",
+                rendered,
+            )
+            self.assertIn("Revisión: " + "a" * 40, rendered)
+
+    def test_interactive_component_repositories_adds_refreshes_and_removes(
+        self,
+    ) -> None:
+        sources = [
+            {
+                "id": "official",
+                "repositoryUrl": "https://github.com/example/official",
+                "catalogUrl": "https://example.test/official/catalog.json",
+                "sourceType": "github",
+                "revision": "b" * 40,
+            }
+        ]
+        added: list[tuple[str, str]] = []
+        removed: list[str] = []
+        refreshed: list[bool] = []
+
+        def add_repository(source_id: str, url: str) -> None:
+            added.append((source_id, url))
+            sources.append(
+                {
+                    "id": source_id,
+                    "repositoryUrl": url,
+                    "catalogUrl": url + "/catalog.json",
+                    "sourceType": "github",
+                    "revision": None,
+                }
+            )
+
+        def remove_repository(source_id: str) -> None:
+            removed.append(source_id)
+            sources[:] = [
+                source for source in sources if source["id"] != source_id
+            ]
+
+        app = SimpleNamespace(
+            component_repositories=SimpleNamespace(
+                cached_sources=lambda: list(sources)
+            ),
+            add_component_repository=add_repository,
+            remove_component_repository=remove_repository,
+            refresh_component_catalogs=lambda: (
+                refreshed.append(True)
+                or SimpleNamespace(
+                    definitions={"java": object()},
+                    sources={"official": object()},
+                )
+            ),
+        )
+        output = StringIO()
+        with (
+            patch.object(
+                cli_module,
+                "_read_input",
+                side_effect=[
+                    "1",
+                    "empresa",
+                    "https://github.com/empresa/eap-components",
+                    "s",
+                    "3",
+                    "2",
+                    "2",
+                    "s",
+                    "\x1b",
+                ],
+            ),
+            redirect_stdout(output),
+        ):
+            cli_module._interactive_component_repositories(app)
+
+        self.assertEqual(
+            [
+                (
+                    "empresa",
+                    "https://github.com/empresa/eap-components",
+                )
+            ],
+            added,
+        )
+        self.assertEqual([True], refreshed)
+        self.assertEqual(["empresa"], removed)
+        rendered = output.getvalue()
+        self.assertIn("Fuente interna", rendered)
+        self.assertIn("revisión: " + "b" * 40, rendered)
+        self.assertIn("[3] Actualizar catálogos", rendered)
+        self.assertIn("Catálogos actualizados: 1 componente(s)", rendered)
 
     def test_component_actions_can_disable_component_in_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -5863,6 +5986,10 @@ class InterfaceTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("[N] Instalar nuevo componente", rendered)
         self.assertIn("[A] Activar componentes disponibles", rendered)
+        self.assertIn(
+            "[F] Actualizar catálogos desde repositorios", rendered
+        )
+        self.assertIn("[G] Gestionar repositorios", rendered)
         self.assertIn("[3] Lanzar aplicación", rendered)
         self.assertIn(
             "[4] Crear acceso directo en el escritorio", rendered
@@ -5993,6 +6120,24 @@ class InterfaceTests(unittest.TestCase):
                     bytes=1536,
                     files=2,
                 ),
+                component_repositories=SimpleNamespace(
+                    cached_sources=lambda: [
+                        {
+                            "id": "official",
+                            "repositoryUrl": (
+                                "https://github.com/example/official"
+                            ),
+                            "revision": "c" * 40,
+                        },
+                        {
+                            "id": "empresa",
+                            "repositoryUrl": (
+                                "https://github.com/example/empresa"
+                            ),
+                            "revision": None,
+                        },
+                    ]
+                ),
                 configured_host_integration_statuses=lambda environment_id: [
                     SimpleNamespace(
                         display_name="Firefox",
@@ -6053,6 +6198,15 @@ class InterfaceTests(unittest.TestCase):
             self.assertNotIn("[3] Diagnóstico", rendered)
             self.assertNotIn("[4] Limpiar temporales", rendered)
             self.assertIn("Temporales: 1.5 KiB · 2 archivo(s)", rendered)
+            self.assertIn(
+                "Catálogos: fuente interna · 2 repositorio(s) "
+                "externo(s) · 1 con caché",
+                rendered,
+            )
+            self.assertLess(
+                rendered.index("Temporales:"),
+                rendered.index("Catálogos: fuente interna"),
+            )
             self.assertNotIn("Abrir CMD del entorno", rendered)
             self.assertNotIn("Aplicaciones arrancables", rendered)
             self.assertNotIn("Componentes del entorno", rendered)
