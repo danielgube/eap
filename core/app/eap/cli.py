@@ -1489,10 +1489,8 @@ def _render_main_dashboard(
         app.paths.workspaces / str(desired["workspace"])
     )
     temporary_usage = app.temporary_storage_usage()
-    component_sources = app.component_repositories.cached_sources()
-    cached_component_sources = sum(
-        1 for source in component_sources if source["revision"]
-    )
+    component_source_count = len(app.component_repositories.sources())
+    pocketool_source_count = len(app.pocketools.sources())
     inventory = app.inventory(environment_id)
     missing_ids = {
         str(item["id"]) for item in _missing_components(app, environment_id)
@@ -1544,9 +1542,11 @@ def _render_main_dashboard(
                     "Temporales: "
                     f"{_format_bytes(temporary_usage.bytes)} · "
                     f"{temporary_usage.files} archivo(s) · {app.paths.temp}",
-                    "Catálogos: bootstrap · "
-                    f"{len(component_sources)} repositorio(s) externo(s) · "
-                    f"{cached_component_sources} con caché",
+                    "Catálogos: "
+                    f"Components {component_source_count} repositorio(s) "
+                    "externo(s), "
+                    f"Pocketools {pocketool_source_count} repositorio(s) "
+                    "externo(s)",
                 ],
             ),
         ],

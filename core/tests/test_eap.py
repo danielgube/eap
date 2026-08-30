@@ -6188,7 +6188,7 @@ class InterfaceTests(unittest.TestCase):
                     files=2,
                 ),
                 component_repositories=SimpleNamespace(
-                    cached_sources=lambda: [
+                    sources=lambda: [
                         {
                             "id": "official",
                             "repositoryUrl": (
@@ -6203,6 +6203,16 @@ class InterfaceTests(unittest.TestCase):
                             ),
                             "revision": None,
                         },
+                    ]
+                ),
+                pocketools=SimpleNamespace(
+                    sources=lambda: [
+                        {
+                            "id": "danielgube",
+                            "repositoryUrl": (
+                                "https://github.com/danielgube/eap-pocketools"
+                            ),
+                        }
                     ]
                 ),
                 configured_host_integration_statuses=lambda environment_id: [
@@ -6266,13 +6276,13 @@ class InterfaceTests(unittest.TestCase):
             self.assertNotIn("[4] Limpiar temporales", rendered)
             self.assertIn("Temporales: 1.5 KiB · 2 archivo(s)", rendered)
             self.assertIn(
-                "Catálogos: bootstrap · 2 repositorio(s) "
-                "externo(s) · 1 con caché",
+                "Catálogos: Components 2 repositorio(s) externo(s), "
+                "Pocketools 1 repositorio(s) externo(s)",
                 rendered,
             )
             self.assertLess(
                 rendered.index("Temporales:"),
-                rendered.index("Catálogos: bootstrap"),
+                rendered.index("Catálogos: Components"),
             )
             self.assertNotIn("Abrir CMD del entorno", rendered)
             self.assertNotIn("Aplicaciones arrancables", rendered)

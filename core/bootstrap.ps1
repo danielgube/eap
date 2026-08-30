@@ -270,7 +270,16 @@ function Get-VerifiedArtifact {
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
     Write-Host "EAP: descargando $fileName..."
-    Invoke-WebRequest -Uri $url -OutFile $partial -UseBasicParsing
+    $previousProgressPreference = $ProgressPreference
+    try {
+        # El progreso clásico de Invoke-WebRequest en Windows PowerShell 5
+        # actualiza la consola por cada bloque y ralentiza mucho archivos grandes.
+        $ProgressPreference = "SilentlyContinue"
+        Invoke-WebRequest -Uri $url -OutFile $partial -UseBasicParsing
+    }
+    finally {
+        $ProgressPreference = $previousProgressPreference
+    }
     $actual = Get-Sha256 $partial
     if ($actual -ne $expected) {
         Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
