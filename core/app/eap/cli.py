@@ -1512,6 +1512,15 @@ def _render_main_dashboard(
     temporary_usage = app.temporary_storage_usage()
     component_source_count = len(app.component_repositories.sources())
     pocketool_source_count = len(app.pocketools.sources())
+    installed_pocketool_ids = sorted(
+        (str(item["id"]) for item in app.pocketools.installed()),
+        key=str.casefold,
+    )
+    installed_pocketool_suffix = (
+        " (" + ", ".join(installed_pocketool_ids) + ")"
+        if installed_pocketool_ids
+        else ""
+    )
     inventory = app.inventory(environment_id)
     missing_ids = {
         str(item["id"]) for item in _missing_components(app, environment_id)
@@ -1567,7 +1576,8 @@ def _render_main_dashboard(
                     f"[C] Catálogo Components: {component_source_count} "
                     "repositorio(s) externo(s)",
                     f"[P] Catálogo Pocketools: {pocketool_source_count} "
-                    "repositorio(s) externo(s)",
+                    "repositorio(s) externo(s)"
+                    f"{installed_pocketool_suffix}",
                 ],
             ),
         ],

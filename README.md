@@ -263,7 +263,8 @@ La interfaz ofrece las mismas operaciones en
 `Catálogo de componentes > Gestionar repositorios`, además de la acción
 `Actualizar catálogos desde repositorios`. La pantalla principal muestra por
 separado cuántos repositorios de componentes y Pocketools están configurados;
-`[C]` y `[P]` abren directamente cada catálogo.
+`[C]` y `[P]` abren directamente cada catálogo. El resumen de Pocketools añade
+entre paréntesis los IDs instalados globalmente.
 Al explorar, instalar o actualizar un componente, EAP muestra si su definición
 procede del catálogo de bootstrap o de un repositorio externo concreto; para
 este último también presenta su URL y revisión.

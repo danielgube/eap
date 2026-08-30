@@ -6296,7 +6296,14 @@ class InterfaceTests(unittest.TestCase):
                                 "https://github.com/danielgube/eap-pocketools"
                             ),
                         }
-                    ]
+                    ],
+                    installed=lambda: [
+                        {
+                            "id": "sessionkeep",
+                            "repository": "danielgube",
+                            "version": "1.0.0",
+                        }
+                    ],
                 ),
                 configured_host_integration_statuses=lambda environment_id: [
                     SimpleNamespace(
@@ -6362,7 +6369,8 @@ class InterfaceTests(unittest.TestCase):
                 rendered,
             )
             self.assertIn(
-                "[P] Catálogo Pocketools: 1 repositorio(s) externo(s)",
+                "[P] Catálogo Pocketools: 1 repositorio(s) externo(s) "
+                "(sessionkeep)",
                 rendered,
             )
             self.assertLess(
