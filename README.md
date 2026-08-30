@@ -75,6 +75,9 @@ ejecucion muestra las herramientas necesarias y solicita confirmacion antes de
 descargar y verificar 7-Zip, mkcert, OpenSSL, CPython Embedded con Pillow,
 ripgrep y Windows Terminal segun `core/core_tools.json`. Las siguientes
 ejecuciones reutilizan las instalaciones validadas y no vuelven a solicitarla.
+Si aún no existe, el bootstrap crea `config.properties` a partir de
+`config.properties.example`; nunca reemplaza un archivo local existente. Las
+fuentes de componentes y Pocketools se leen exclusivamente de ese archivo.
 Para automatizar directamente el bootstrap se puede pasar `-Yes` a
 `core/bootstrap.ps1`.
 
@@ -235,17 +238,19 @@ que instalar o actualizar el componente desde el catálogo.
 
 ### Repositorios de componentes
 
-El catálogo oficial vive en
-`https://github.com/danielgube/eap-components` y se configura de forma
-predeterminada mediante:
+El catálogo público de DanielGube vive en
+`https://github.com/danielgube/eap-components`. La distribución lo declara
+explícitamente en `config.properties.example`, que el bootstrap usa para crear la
+configuración local inicial:
 
     components.repository.danielgube=https://github.com/danielgube/eap-components
 
 `component refresh` resuelve la rama `main` a un commit inmutable, descarga y
 valida `catalog.json` y todos sus manifiestos, y sólo después activa la nueva
 revisión en `data/component-catalogs`. Los siguientes arranques usan esa caché
-sin consultar la red. El snapshot bajo `core/catalog` permanece como bootstrap y
-respaldo offline cuando todavía no se ha actualizado ningún repositorio.
+sin consultar la red. `core/catalog/catalog.json` sólo conserva el contrato
+mínimo necesario para arrancar; los manifiestos de componentes ya no forman
+parte de `core`.
 
 Se pueden añadir fuentes GitHub o una URL HTTPS directa a `catalog.json`:
 
@@ -259,14 +264,13 @@ La interfaz ofrece las mismas operaciones en
 `Actualizar catálogos desde repositorios`. La pantalla principal resume cuántos
 repositorios externos están configurados y cuántos tienen una revisión en caché.
 Al explorar, instalar o actualizar un componente, EAP muestra si su definición
-procede de la fuente interna o de un repositorio externo concreto; para este
-último también presenta su URL y revisión.
+procede del catálogo de bootstrap o de un repositorio externo concreto; para
+este último también presenta su URL y revisión.
 
 Los repositorios externos pueden añadir IDs nuevos. Si dos repositorios externos
 publican el mismo ID, EAP rechaza la composición completa en lugar de elegir uno
-silenciosamente. Una definición externa sí sustituye al snapshot integrado del
-mismo componente: éste es el mecanismo con el que el catálogo oficial queda
-desacoplado del ciclo de releases de EAP.
+silenciosamente. El motor sólo conoce el prefijo de configuración
+`components.repository.`: no contiene IDs ni URLs de fuentes concretas.
 
 El lock de cada componente conserva repositorio, revisión, ruta y hash del
 manifiesto que lo activó. En esta primera fase los catálogos son exclusivamente
@@ -675,9 +679,9 @@ ni al core de EAP. Se publican en repositorios independientes, se instalan bajo
 directorio se añade al `PATH` después de las rutas de los componentes activos y
 antes de las herramientas core.
 
-El repositorio público predeterminado es
+La configuración inicial declara el repositorio público
 `https://github.com/danielgube/eap-pocketools`. Se pueden añadir repositorios
-GitHub públicos de otras organizaciones:
+GitHub públicos de otras organizaciones con otro id:
 
     eap.cmd pocketool repository add empresa https://github.com/empresa/eap-pocketools
     eap.cmd pocketool refresh
@@ -721,8 +725,7 @@ repositorios públicos.
 - core/app/eap: motor de EAP;
 - core/app/eap/shortcuts.py: generación controlada de accesos directos Windows;
 - core/catalog/host-integrations.json: catálogo de integraciones explícitas con el host;
-- core/catalog/catalog.json: snapshot de bootstrap del catálogo oficial;
-- core/catalog/components: manifiestos de bootstrap incluidos con EAP;
+- core/catalog/catalog.json: contrato mínimo del catálogo de bootstrap;
 - data/component-catalogs: revisiones inmutables de los repositorios externos;
 - components/java/<proveedor>/<version>: instalaciones compartidas;
 - components/maven/apache/<version>: instalaciones Maven compartidas;
@@ -755,6 +758,8 @@ shells y launchers. Por ejemplo:
 
     # config.properties general
     env.COMPANY_API_URL=https://api.example
+    components.repository.danielgube=https://github.com/danielgube/eap-components
+    components.repository.empresa=https://github.com/empresa/eap-components
     pocketools.repository.danielgube=https://github.com/danielgube/eap-pocketools
     pocketools.repository.empresa=https://github.com/empresa/eap-pocketools
 
@@ -763,8 +768,10 @@ shells y launchers. Por ejemplo:
 
 EAP impide sobrescribir con este mecanismo `PATH`, las rutas del perfil portable,
 las variables `EAP_*` y las variables gestionadas por componentes. Los valores no
-se escriben en locks, manifiestos ni diagnósticos. `config.properties.example`
-documenta las opciones generales sin contener secretos.
+se escriben en locks, manifiestos ni diagnósticos. Las propiedades
+`components.repository.<id>` y `pocketools.repository.<id>` permiten combinar
+cualquier número de fuentes HTTPS. `config.properties.example` documenta las
+opciones generales sin contener secretos.
 
 ## Pruebas
 

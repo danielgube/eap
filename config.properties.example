@@ -40,9 +40,10 @@ proxy_authentication_require_https=true
 # Use proxy_authentication_require_https=false sólo si el formulario heredado
 # obliga a enviar credenciales por HTTP y se ha aceptado ese riesgo.
 
-# Catálogo oficial de componentes. EAP conserva un snapshot incluido para
-# bootstrap/offline y usa la revisión cacheada después de `component refresh`.
+# Fuentes públicas iniciales. Estas URLs se declaran aquí, no están acopladas al
+# motor de EAP. Añada más propiedades con un id distinto para combinar fuentes.
 components.repository.danielgube=https://github.com/danielgube/eap-components
+# components.repository.empresa=https://github.com/empresa/eap-components
 
 # Repositorios Pocketools públicos de GitHub. EAP descubre los manifiestos
 # pocketools/*/pocketool.json directamente desde la rama main.

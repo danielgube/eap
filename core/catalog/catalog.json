@@ -1,54 +1,5 @@
 {
   "schemaVersion": 1,
   "catalogVersion": "0.20.0",
-  "components": [
-    {
-      "id": "java",
-      "manifest": "components/java.json"
-    },
-    {
-      "id": "maven",
-      "manifest": "components/maven.json"
-    },
-    {
-      "id": "git",
-      "manifest": "components/git.json"
-    },
-    {
-      "id": "nodejs",
-      "manifest": "components/nodejs.json"
-    },
-    {
-      "id": "python",
-      "manifest": "components/python.json"
-    },
-    {
-      "id": "bruno",
-      "manifest": "components/bruno.json"
-    },
-    {
-      "id": "dbeaver",
-      "manifest": "components/dbeaver.json"
-    },
-    {
-      "id": "vscode",
-      "manifest": "components/vscode.json"
-    },
-    {
-      "id": "vscodium",
-      "manifest": "components/vscodium.json"
-    },
-    {
-      "id": "eclipse",
-      "manifest": "components/eclipse.json"
-    },
-    {
-      "id": "intellij-idea",
-      "manifest": "components/intellij-idea.json"
-    },
-    {
-      "id": "kiro",
-      "manifest": "components/kiro.json"
-    }
-  ]
+  "components": []
 }

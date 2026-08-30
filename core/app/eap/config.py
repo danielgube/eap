@@ -23,12 +23,6 @@ DEFAULTS: dict[str, str] = {
     "install.maxCompressionRatio": "200",
     "transfer.maxExtractBytes": str(50 * 1024 * 1024 * 1024),
     "transfer.maxFiles": "500000",
-    "components.repository.danielgube": (
-        "https://github.com/danielgube/eap-components"
-    ),
-    "pocketools.repository.danielgube": (
-        "https://github.com/danielgube/eap-pocketools"
-    ),
 }
 
 

@@ -1075,7 +1075,7 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 )
                 print(
                     f"Catálogo actualizado: {len(values)} componente(s) · "
-                    + (", ".join(repositories) or "snapshot incluido")
+                    + (", ".join(repositories) or "catálogo de bootstrap")
                 )
             return 0
 
@@ -1544,7 +1544,7 @@ def _render_main_dashboard(
                     "Temporales: "
                     f"{_format_bytes(temporary_usage.bytes)} · "
                     f"{temporary_usage.files} archivo(s) · {app.paths.temp}",
-                    "Catálogos: fuente interna · "
+                    "Catálogos: bootstrap · "
                     f"{len(component_sources)} repositorio(s) externo(s) · "
                     f"{cached_component_sources} con caché",
                 ],
@@ -1978,8 +1978,8 @@ def _interactive_component_repositories(app: EapApplication) -> None:
             "Catálogo de componentes > Repositorios",
             [
                 (
-                    "Fuente interna",
-                    ["Incluida con EAP · bootstrap y respaldo offline"],
+                    "Catálogo de bootstrap",
+                    ["Incluido con EAP · sólo infraestructura imprescindible"],
                 ),
                 ("Repositorios externos", repository_rows),
                 (
@@ -2680,14 +2680,14 @@ def _active_component(
 def _component_source_label(component: Any) -> str:
     source = getattr(component, "source", None)
     if source is None:
-        return "interna (incluida con EAP)"
+        return "bootstrap (incluida con EAP)"
     return f"repositorio {source.id}"
 
 
 def _component_source_rows(component: Any) -> list[str]:
     source = getattr(component, "source", None)
     if source is None:
-        return ["Interna · incluida con EAP"]
+        return ["Bootstrap · incluida con EAP"]
     return [
         f"Repositorio: {source.id}",
         f"URL: {source.repository_url}",

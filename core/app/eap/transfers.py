@@ -600,11 +600,22 @@ class EnvironmentTransfer:
         else:
             target.mkdir()
 
-    @staticmethod
-    def _write_safe_config(package_root: Path, environment_id: str) -> None:
+    def _write_safe_config(
+        self, package_root: Path, environment_id: str
+    ) -> None:
         values = dict(DEFAULTS)
         values["profile.default"] = environment_id
         values["environment.default"] = environment_id
+        values.update(
+            {
+                key: value
+                for key, value in self.settings.values.items()
+                if value
+                and key.startswith(
+                    ("components.repository.", "pocketools.repository.")
+                )
+            }
+        )
         content = [
             "# Configuración segura generada por EAP para una exportación.",
             "# Añada localmente proxies, tokens u otros valores privados.",

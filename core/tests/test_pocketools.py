@@ -22,6 +22,14 @@ from eap.pocketools import (
 from eap.util import sha256_file
 
 
+_DANIELGUBE_SETTINGS = {
+    **DEFAULTS,
+    "pocketools.repository.danielgube": (
+        "https://github.com/danielgube/eap-pocketools"
+    ),
+}
+
+
 class FakePocketToolClient:
     def __init__(self, catalog: dict, artifacts: dict[str, Path]):
         self.catalog = catalog
@@ -178,7 +186,6 @@ class PocketToolTests(unittest.TestCase):
         settings = Settings(
             {
                 **DEFAULTS,
-                "pocketools.repository.danielgube": "",
                 "pocketools.repository.test": (
                     "https://example.test/pocketools.catalog.json"
                 ),
@@ -201,7 +208,7 @@ class PocketToolTests(unittest.TestCase):
     def test_github_repository_maps_to_main_branch_api(self) -> None:
         source = PocketToolManager(
             self.paths,
-            Settings(DEFAULTS),
+            Settings(_DANIELGUBE_SETTINGS),
             FakePocketToolClient({}, {}),
         ).source("danielgube")
         self.assertEqual(
@@ -216,7 +223,7 @@ class PocketToolTests(unittest.TestCase):
         client = FakeGitHubPocketToolClient(manifest)
         manager = PocketToolManager(
             self.paths,
-            Settings(DEFAULTS),
+            Settings(_DANIELGUBE_SETTINGS),
             client,
         )
 
@@ -252,7 +259,7 @@ class PocketToolTests(unittest.TestCase):
         client = FakeGitHubPocketToolClient(pocketool_manifest())
         manager = PocketToolManager(
             self.paths,
-            Settings(DEFAULTS),
+            Settings(_DANIELGUBE_SETTINGS),
             client,
         )
         manager.refresh("danielgube")

@@ -16,7 +16,7 @@ from .component_repositories import (
     ComponentRepositoryManager,
     update_component_repository_property,
 )
-from .config import DEFAULTS, Settings, load_properties
+from .config import Settings, load_properties
 from .console import console_title
 from .core_tools import CoreTools
 from .environments import EnvironmentStore
@@ -276,11 +276,10 @@ class EapApplication:
 
     def remove_component_repository(self, source_id: str) -> None:
         source = self.component_repositories.source(source_id)
-        key = f"components.repository.{source.id}"
         update_component_repository_property(
             self.paths.config,
             source.id,
-            "" if key in DEFAULTS else None,
+            None,
         )
         self._reload_component_repository_settings()
 
@@ -413,11 +412,10 @@ class EapApplication:
 
     def remove_pocketool_repository(self, source_id: str) -> None:
         source = self.pocketools.source(source_id)
-        key = f"pocketools.repository.{source.id}"
         update_repository_property(
             self.paths.config,
             source.id,
-            "" if key in DEFAULTS else None,
+            None,
         )
         self._reload_pocketool_settings()
 

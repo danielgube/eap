@@ -555,6 +555,16 @@ try {
     foreach ($pending in $pendingTools) {
         Install-CoreTool $pending.tool $pending.target $tempRoot $coreRoot
     }
+
+    $configPath = Join-Path $eapRoot "config.properties"
+    if (-not (Test-Path -LiteralPath $configPath)) {
+        $configTemplate = Join-Path $eapRoot "config.properties.example"
+        if (-not (Test-Path -LiteralPath $configTemplate -PathType Leaf)) {
+            throw "No se encuentra la plantilla de configuración: $configTemplate"
+        }
+        Copy-Item -LiteralPath $configTemplate -Destination $configPath
+        Write-Host "EAP: config.properties creado desde la plantilla incluida."
+    }
 }
 catch {
     Write-Error "Bootstrap de EAP fallido: $($_.Exception.Message)"

@@ -649,9 +649,8 @@ def vscode_component(manifest_path: Path) -> ComponentDefinition:
 
 def intellij_component() -> ComponentDefinition:
     manifest_path = (
-        Path(__file__).resolve().parents[1]
-        / "catalog"
-        / "components"
+        Path(__file__).resolve().parent
+        / "fixtures"
         / "intellij-idea.json"
     )
     return ComponentDefinition(manifest_path, load_json(manifest_path))
@@ -659,9 +658,8 @@ def intellij_component() -> ComponentDefinition:
 
 def eclipse_component() -> ComponentDefinition:
     manifest_path = (
-        Path(__file__).resolve().parents[1]
-        / "catalog"
-        / "components"
+        Path(__file__).resolve().parent
+        / "fixtures"
         / "eclipse.json"
     )
     return ComponentDefinition(manifest_path, load_json(manifest_path))
@@ -669,9 +667,8 @@ def eclipse_component() -> ComponentDefinition:
 
 def bruno_component() -> ComponentDefinition:
     manifest_path = (
-        Path(__file__).resolve().parents[1]
-        / "catalog"
-        / "components"
+        Path(__file__).resolve().parent
+        / "fixtures"
         / "bruno.json"
     )
     return ComponentDefinition(manifest_path, load_json(manifest_path))
@@ -1124,6 +1121,11 @@ class BootstrapTests(unittest.TestCase):
     def _fixture(self, root: Path) -> tuple[Path, Path]:
         core = root / "core"
         core.mkdir(parents=True)
+        (root / "config.properties.example").write_text(
+            "profile.default=default\n"
+            "components.repository.test=https://example.test/components.json\n",
+            encoding="utf-8",
+        )
         bootstrap = core / "bootstrap.ps1"
         shutil.copyfile(
             Path(__file__).resolve().parents[1] / "bootstrap.ps1",
@@ -1257,11 +1259,20 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue(
                 (target / "ProfileIcons" / self._ICON).is_file()
             )
+            config = root / "config.properties"
+            self.assertEqual(
+                (root / "config.properties.example").read_text(encoding="utf-8"),
+                config.read_text(encoding="utf-8"),
+            )
 
+            config.write_text("profile.default=custom\n", encoding="utf-8")
             repeated = self._run(root, bootstrap, manifest, "")
             repeated_output = repeated.stdout + repeated.stderr
             self.assertEqual(0, repeated.returncode, repeated_output)
             self.assertNotIn("Bienvenido", repeated_output)
+            self.assertEqual(
+                "profile.default=custom\n", config.read_text(encoding="utf-8")
+            )
 
     def test_first_bootstrap_can_be_cancelled(self) -> None:
         test_temp = Path(__file__).resolve().parents[2] / "temp"
@@ -1278,6 +1289,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertFalse(
                 (root / "core" / "tools" / "path-tool").exists()
             )
+            self.assertFalse((root / "config.properties").exists())
 
 
 class ComponentRepositoryTests(unittest.TestCase):
@@ -1285,16 +1297,16 @@ class ComponentRepositoryTests(unittest.TestCase):
 
     @staticmethod
     def _copy_bundled_catalog(paths: EapPaths) -> None:
-        source = Path(__file__).resolve().parents[1] / "catalog"
-        shutil.copytree(source, paths.catalog.parent)
+        paths.catalog.parent.mkdir(parents=True)
+        shutil.copyfile(
+            Path(__file__).resolve().parents[1] / "catalog" / "catalog.json",
+            paths.catalog,
+        )
 
     @staticmethod
     def _bruno_manifest() -> str:
         path = (
-            Path(__file__).resolve().parents[1]
-            / "catalog"
-            / "components"
-            / "bruno.json"
+            Path(__file__).resolve().parent / "fixtures" / "bruno.json"
         )
         return path.read_text(encoding="utf-8")
 
@@ -1381,9 +1393,8 @@ class ComponentRepositoryTests(unittest.TestCase):
             changed = ComponentRepositoryManager(
                 paths, changed_settings, OfflineClient()
             )
-            self.assertEqual(
-                "builtin", changed.load().component("bruno").source_id
-            )
+            with self.assertRaisesRegex(ValidationError, "Componente desconocido"):
+                changed.load().component("bruno")
             self.assertIsNone(changed.cached_sources()[0]["revision"])
 
     def test_rejects_manifest_traversal_and_cross_repository_collisions(
@@ -1496,7 +1507,7 @@ class ComponentRepositoryTests(unittest.TestCase):
                 locked["manifestSource"]["manifest"],
             )
 
-    def test_repository_property_can_override_and_disable_default(self) -> None:
+    def test_repository_property_can_be_added_and_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.properties"
             path.write_text("profile.default=default\n", encoding="utf-8")
@@ -1512,14 +1523,36 @@ class ComponentRepositoryTests(unittest.TestCase):
                 path.read_text(encoding="utf-8"),
             )
 
-            update_component_repository_property(path, "official", "")
-            self.assertIn(
-                "components.repository.official=",
+            update_component_repository_property(path, "official", None)
+            self.assertNotIn(
+                "components.repository.official",
                 path.read_text(encoding="utf-8"),
             )
 
 
 class SettingsTests(unittest.TestCase):
+    def test_repository_sources_are_declared_only_in_config(self) -> None:
+        self.assertFalse(
+            any(".repository." in key for key in DEFAULTS)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.properties"
+            path.write_text(
+                "components.repository.one=https://example.test/components.json\n"
+                "components.repository.two=https://example.test/more.json\n"
+                "pocketools.repository.one=https://example.test/pocketools.json\n",
+                encoding="utf-8",
+            )
+            settings = Settings.load(path)
+            self.assertEqual(
+                "https://example.test/more.json",
+                settings.get("components.repository.two"),
+            )
+            self.assertEqual(
+                "https://example.test/pocketools.json",
+                settings.get("pocketools.repository.one"),
+            )
+
     def test_profile_default_and_environment_alias_are_bidirectional(
         self,
     ) -> None:
@@ -4257,6 +4290,15 @@ class TransferTests(unittest.TestCase):
                 ],
             },
         )
+        self.paths.catalog.parent.mkdir(parents=True)
+        atomic_write_json(
+            self.paths.catalog,
+            {
+                "schemaVersion": 1,
+                "catalogVersion": "test",
+                "components": [],
+            },
+        )
         (self.paths.root / "eap.cmd").write_text(
             "@echo off\n", encoding="utf-8"
         )
@@ -4264,7 +4306,7 @@ class TransferTests(unittest.TestCase):
             "environment.default=default\nprivate.token=DO_NOT_EXPORT\n",
             encoding="utf-8",
         )
-        catalog_components = self.paths.core / "catalog" / "components"
+        catalog_components = self.paths.temp / "test-manifests"
         catalog_components.mkdir(parents=True)
         component = dbeaver_component(
             catalog_components / "dbeaver.json"
@@ -4295,7 +4337,20 @@ class TransferTests(unittest.TestCase):
         self.store.publish_component(
             "default", self.artifact, self.install_path, "b" * 64
         )
-        self.settings = Settings(dict(DEFAULTS))
+        self.settings = Settings(
+            {
+                **DEFAULTS,
+                "components.repository.danielgube": (
+                    "https://github.com/danielgube/eap-components"
+                ),
+                "components.repository.empresa": (
+                    "https://github.com/empresa/eap-components"
+                ),
+                "pocketools.repository.danielgube": (
+                    "https://github.com/danielgube/eap-pocketools"
+                ),
+            }
+        )
         self.core_tools = CoreTools.load(self.paths)
         self.transfer = EnvironmentTransfer(
             self.paths,
@@ -4464,7 +4519,10 @@ class TransferTests(unittest.TestCase):
         self.assertIn("eap.cmd", paths)
         self.assertIn("eap-tool-package.json", paths)
         self.assertNotIn("nested-export.7z", paths)
-        self.assertIn("core/catalog/components/dbeaver.json", paths)
+        self.assertIn("core/catalog/catalog.json", paths)
+        self.assertFalse(
+            any(path.startswith("core/catalog/components/") for path in paths)
+        )
         self.assertFalse(
             any(
                 path.startswith("components/")
@@ -4492,6 +4550,15 @@ class TransferTests(unittest.TestCase):
         ).stdout
         self.assertIn("environment.default=default", safe_config)
         self.assertIn("profile.default=default", safe_config)
+        self.assertIn(
+            "components.repository.empresa=https://github.com/empresa/eap-components",
+            safe_config,
+        )
+        self.assertIn(
+            "pocketools.repository.danielgube=https://github.com/"
+            "danielgube/eap-pocketools",
+            safe_config,
+        )
         self.assertNotIn("DO_NOT_EXPORT", safe_config)
 
     def test_tool_export_enriches_payloads_for_local_activation(self) -> None:
@@ -5659,7 +5726,7 @@ class InterfaceTests(unittest.TestCase):
                 "Java 21 LTS · activo · 21.0.12+8",
                 rendered,
             )
-            self.assertIn("Interna · incluida con EAP", rendered)
+        self.assertIn("Bootstrap · incluida con EAP", rendered)
 
     def test_component_flow_shows_repository_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -5778,7 +5845,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual([True], refreshed)
         self.assertEqual(["empresa"], removed)
         rendered = output.getvalue()
-        self.assertIn("Fuente interna", rendered)
+        self.assertIn("Catálogo de bootstrap", rendered)
         self.assertIn("revisión: " + "b" * 40, rendered)
         self.assertIn("[3] Actualizar catálogos", rendered)
         self.assertIn("Catálogos actualizados: 1 componente(s)", rendered)
@@ -6199,13 +6266,13 @@ class InterfaceTests(unittest.TestCase):
             self.assertNotIn("[4] Limpiar temporales", rendered)
             self.assertIn("Temporales: 1.5 KiB · 2 archivo(s)", rendered)
             self.assertIn(
-                "Catálogos: fuente interna · 2 repositorio(s) "
+                "Catálogos: bootstrap · 2 repositorio(s) "
                 "externo(s) · 1 con caché",
                 rendered,
             )
             self.assertLess(
                 rendered.index("Temporales:"),
-                rendered.index("Catálogos: fuente interna"),
+                rendered.index("Catálogos: bootstrap"),
             )
             self.assertNotIn("Abrir CMD del entorno", rendered)
             self.assertNotIn("Aplicaciones arrancables", rendered)

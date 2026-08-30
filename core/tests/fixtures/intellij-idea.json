@@ -1,4 +1,5 @@
 {
+  "testFixture": true,
   "schemaVersion": 1,
   "id": "intellij-idea",
   "displayName": "IntelliJ IDEA",
