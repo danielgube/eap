@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "EAP",
-  "version": "0.19.3",
+  "version": "0.19.4",
   "engine": {
     "name": "CPython Embedded",
     "version": "3.14.7",
