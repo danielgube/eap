@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -1381,11 +1382,19 @@ def interactive(
                     app, environment_id, shell_on_exit
                 )
             try:
-                if option == "1":
+                if option == "c":
                     update_status = _interactive_catalog(
                         app, environment_id, update_status
                     )
-                elif option == "2":
+                elif option == "p":
+                    _interactive_pocketools(app, environment_id)
+                elif option == "w":
+                    _interactive_change_workspace(app, environment_id)
+                elif option == "d":
+                    _interactive_change_data_profile(app, environment_id)
+                elif option == "t":
+                    _interactive_clean_temporary_storage(app)
+                elif option == "m":
                     previous_environment = environment_id
                     environment_id = _interactive_manage_environments(
                         app, environment_id
@@ -1393,8 +1402,6 @@ def interactive(
                     if environment_id != previous_environment:
                         _interactive_restore_missing(app, environment_id)
                     update_status = _initial_update_status(app, environment_id)
-                elif option == "3":
-                    _interactive_pocketools(app, environment_id)
                 elif option == "0":
                     previous_environment = environment_id
                     selected_environment = _interactive_advanced_options(
@@ -1407,6 +1414,20 @@ def interactive(
                         _interactive_restore_missing(app, environment_id)
                     update_status = _initial_update_status(
                         app, environment_id
+                    )
+                elif option.isdigit():
+                    ordered_inventory = _ordered_inventory(
+                        app, app.inventory(environment_id)
+                    )
+                    selected_index = int(option) - 1
+                    if not 0 <= selected_index < len(ordered_inventory):
+                        print("Opción no válida.")
+                        continue
+                    update_status = _interactive_component_actions(
+                        app,
+                        environment_id,
+                        ordered_inventory[selected_index],
+                        update_status,
                     )
                 elif option in {"q", "quit", "salir"}:
                     return _close_interactive(
@@ -1500,6 +1521,7 @@ def _render_main_dashboard(
         environment_id,
         inventory,
         update_status,
+        numbered=True,
         missing_ids=missing_ids,
     )
     status_rows: list[str] = []
@@ -1537,16 +1559,15 @@ def _render_main_dashboard(
                 "Profile activo",
                 [
                     f"Nombre: {environment_id}",
-                    f"Datos: {profile_path}",
-                    f"Workspace: {workspace_path}",
-                    "Temporales: "
+                    f"[D] Datos: {profile_path}",
+                    f"[W] Workspace: {workspace_path}",
+                    "[T] Temporales: "
                     f"{_format_bytes(temporary_usage.bytes)} · "
                     f"{temporary_usage.files} archivo(s) · {app.paths.temp}",
-                    "Catálogos: "
-                    f"Components {component_source_count} repositorio(s) "
-                    "externo(s), "
-                    f"Pocketools {pocketool_source_count} repositorio(s) "
-                    "externo(s)",
+                    f"[C] Catálogo Components: {component_source_count} "
+                    "repositorio(s) externo(s)",
+                    f"[P] Catálogo Pocketools: {pocketool_source_count} "
+                    "repositorio(s) externo(s)",
                 ],
             ),
         ],
@@ -1573,9 +1594,7 @@ def _render_main_dashboard(
             (
                 "",
                 [
-                    "[1] Catálogo de componentes",
-                    "[2] Gestionar profile",
-                    "[3] Pocketools",
+                    "[M] Gestionar profile",
                     "[0] Opciones avanzadas",
                     "[Esc] Cerrar interfaz",
                 ],
@@ -2812,32 +2831,15 @@ def _style(text: str, color: str, stream: Any | None = None) -> str:
 def _colorize_panel_row(row: str, content: str) -> str:
     if not _COLOR_ENABLED or not _stream_is_terminal(sys.stdout):
         return row
-    markers = (
-        "[0]",
-        "[1]",
-        "[2]",
-        "[3]",
-        "[4]",
-        "[5]",
-        "[6]",
-        "[7]",
-        "[8]",
-        "[9]",
-        "[A]",
-        "[E]",
-        "[F]",
-        "[G]",
-        "[N]",
-        "[R]",
-        "[Esc]",
-    )
+    marker_pattern = re.compile(r"\[(?:\d+|[A-Z]|Esc)\]")
     if content.startswith("┌─"):
         colored = _style(row, _ANSI_CYAN)
-        for marker in markers:
-            colored = colored.replace(
-                marker, f"{_ANSI_YELLOW}{marker}{_ANSI_CYAN}"
-            )
-        return colored
+        return marker_pattern.sub(
+            lambda match: (
+                f"{_ANSI_YELLOW}{match.group(0)}{_ANSI_CYAN}"
+            ),
+            colored,
+        )
     if content.startswith("└─"):
         return _style(row, _ANSI_CYAN)
     replacements = (
@@ -2850,9 +2852,10 @@ def _colorize_panel_row(row: str, content: str) -> str:
     colored = row
     for token, color in replacements:
         colored = colored.replace(token, _style(token, color))
-    for marker in markers:
-        colored = colored.replace(marker, _style(marker, _ANSI_YELLOW))
-    return colored
+    return marker_pattern.sub(
+        lambda match: _style(match.group(0), _ANSI_YELLOW),
+        colored,
+    )
 
 
 def _stream_is_terminal(stream: Any) -> bool:
@@ -2980,24 +2983,10 @@ def _interactive_manage_environments(
     if option == "2":
         return _interactive_create_environment(app, current)
     if option == "3":
-        desired = app.environments.read_desired(current)
-        workspace = _read_input(
-            f"Workspace [{desired['workspace']}]: "
-        ).strip()
-        if _is_escape(workspace) or not workspace:
-            return current
-        path = app.environments.set_workspace(current, workspace)
-        print(f"Workspace activo: {path}")
+        _interactive_change_workspace(app, current)
         return current
     if option == "4":
-        data_profile = _interactive_choose_data_profile(
-            app, f"{current}-data"
-        )
-        if data_profile is None:
-            return current
-        path = app.environments.set_data_profile(current, data_profile)
-        print(f"Datos activos del profile: {path}")
-        _print_activation_notice(current)
+        _interactive_change_data_profile(app, current)
         return current
     if option == "5":
         _interactive_export_environment(app, current)
@@ -3013,6 +3002,32 @@ def _interactive_manage_environments(
         return _interactive_delete_environment(app, current)
     print("Opción no válida.")
     return current
+
+
+def _interactive_change_workspace(
+    app: EapApplication, current: str
+) -> None:
+    desired = app.environments.read_desired(current)
+    workspace = _read_input(
+        f"Workspace [{desired['workspace']}]: "
+    ).strip()
+    if _is_escape(workspace) or not workspace:
+        return
+    path = app.environments.set_workspace(current, workspace)
+    print(f"Workspace activo: {path}")
+
+
+def _interactive_change_data_profile(
+    app: EapApplication, current: str
+) -> None:
+    data_profile = _interactive_choose_data_profile(
+        app, f"{current}-data"
+    )
+    if data_profile is None:
+        return
+    path = app.environments.set_data_profile(current, data_profile)
+    print(f"Datos activos del profile: {path}")
+    _print_activation_notice(current)
 
 
 def _interactive_create_environment(

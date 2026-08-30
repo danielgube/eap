@@ -4941,14 +4941,25 @@ class InterfaceTests(unittest.TestCase):
         ):
             cli_module._print_panel(
                 "Integraciones con el Host",
-                [("", ["Firefox: OK", "[1] Gestionar", "Estado: KO"])],
+                [
+                    (
+                        "",
+                        [
+                            "Firefox: OK",
+                            "[W] Workspace",
+                            "[10] Gestionar",
+                            "Estado: KO",
+                        ],
+                    )
+                ],
             )
 
         rendered = output.getvalue()
         self.assertIn("\x1b[1;36m", rendered)
         self.assertIn("\x1b[32mOK\x1b[0m", rendered)
         self.assertIn("\x1b[31mKO\x1b[0m", rendered)
-        self.assertIn("\x1b[33m[1]\x1b[0m", rendered)
+        self.assertIn("\x1b[33m[W]\x1b[0m", rendered)
+        self.assertIn("\x1b[33m[10]\x1b[0m", rendered)
         visible = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
         self.assertTrue(
             all(len(line) == 60 for line in visible.splitlines() if line)
@@ -5941,6 +5952,78 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(_is_escape("\x1b"))
         self.assertTrue(_is_escape("esc"))
 
+    def test_main_screen_routes_context_shortcuts_and_components(self) -> None:
+        status = {
+            "state": "cached",
+            "updates": [],
+            "resolved": [],
+            "error": None,
+        }
+        selected = {"id": "java"}
+        app = SimpleNamespace(inventory=lambda environment_id: [selected])
+        with (
+            patch.object(
+                cli_module,
+                "_ensure_interactive_environment",
+                return_value="default",
+            ),
+            patch.object(cli_module, "_interactive_restore_missing"),
+            patch.object(
+                cli_module,
+                "_initial_update_status",
+                return_value=status,
+            ),
+            patch.object(cli_module, "_render_main_dashboard"),
+            patch.object(
+                cli_module,
+                "_read_input",
+                side_effect=["w", "d", "t", "c", "p", "1", "m", "\x1b"],
+            ),
+            patch.object(
+                cli_module, "_interactive_change_workspace"
+            ) as workspace,
+            patch.object(
+                cli_module, "_interactive_change_data_profile"
+            ) as data_profile,
+            patch.object(
+                cli_module, "_interactive_clean_temporary_storage"
+            ) as temporary_storage,
+            patch.object(
+                cli_module,
+                "_interactive_catalog",
+                return_value=status,
+            ) as catalog,
+            patch.object(cli_module, "_interactive_pocketools") as pocketools,
+            patch.object(
+                cli_module,
+                "_ordered_inventory",
+                return_value=[selected],
+            ),
+            patch.object(
+                cli_module,
+                "_interactive_component_actions",
+                return_value=status,
+            ) as component_actions,
+            patch.object(
+                cli_module,
+                "_interactive_manage_environments",
+                return_value="default",
+            ) as manage,
+            patch.object(cli_module, "console_title"),
+            patch.object(cli_module, "set_console_title"),
+        ):
+            self.assertEqual(0, cli_module.interactive(app))
+
+        workspace.assert_called_once_with(app, "default")
+        data_profile.assert_called_once_with(app, "default")
+        temporary_storage.assert_called_once_with(app)
+        catalog.assert_called_once_with(app, "default", status)
+        pocketools.assert_called_once_with(app, "default")
+        component_actions.assert_called_once_with(
+            app, "default", selected, status
+        )
+        manage.assert_called_once_with(app, "default")
+
     def test_managed_menu_escape_enters_the_environment_cmd(self) -> None:
         calls: list[tuple[str, str]] = []
         app = SimpleNamespace(
@@ -6248,7 +6331,7 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("┌─ EAP 0.2.0", rendered)
             self.assertIn("┌─ Runtimes (2)", rendered)
             self.assertIn("┌─ Herramientas (1)", rendered)
-            self.assertIn("│ ┌─ Java JDK *", rendered)
+            self.assertIn("│ ┌─ [1] Java JDK *", rendered)
             self.assertTrue(
                 any(
                     "Java JDK *" in line and "Node.js" in line
@@ -6270,19 +6353,21 @@ class InterfaceTests(unittest.TestCase):
                 ),
                 rendered,
             )
-            self.assertIn("[1] Catálogo de componentes", rendered)
-            self.assertIn("[2] Gestionar profile", rendered)
+            self.assertIn("[M] Gestionar profile", rendered)
             self.assertNotIn("[3] Diagnóstico", rendered)
             self.assertNotIn("[4] Limpiar temporales", rendered)
-            self.assertIn("Temporales: 1.5 KiB · 2 archivo(s)", rendered)
+            self.assertIn("[T] Temporales: 1.5 KiB · 2 archivo(s)", rendered)
             self.assertIn(
-                "Catálogos: Components 2 repositorio(s) externo(s), "
-                "Pocketools 1 repositorio(s) externo(s)",
+                "[C] Catálogo Components: 2 repositorio(s) externo(s)",
+                rendered,
+            )
+            self.assertIn(
+                "[P] Catálogo Pocketools: 1 repositorio(s) externo(s)",
                 rendered,
             )
             self.assertLess(
                 rendered.index("Temporales:"),
-                rendered.index("Catálogos: Components"),
+                rendered.index("Catálogo Components"),
             )
             self.assertNotIn("Abrir CMD del entorno", rendered)
             self.assertNotIn("Aplicaciones arrancables", rendered)
@@ -6295,11 +6380,11 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("Firefox: OK", rendered)
             self.assertIn("Integración de prueba: KO", rendered)
             self.assertIn(
-                "Datos: " + str(paths.data / "profiles" / "default"),
+                "[D] Datos: " + str(paths.data / "profiles" / "default"),
                 rendered,
             )
             self.assertIn(
-                "Workspace: " + str(paths.workspaces / "default"),
+                "[W] Workspace: " + str(paths.workspaces / "default"),
                 rendered,
             )
 

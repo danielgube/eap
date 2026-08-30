@@ -262,7 +262,8 @@ Se pueden añadir fuentes GitHub o una URL HTTPS directa a `catalog.json`:
 La interfaz ofrece las mismas operaciones en
 `Catálogo de componentes > Gestionar repositorios`, además de la acción
 `Actualizar catálogos desde repositorios`. La pantalla principal muestra por
-separado cuántos repositorios de componentes y Pocketools están configurados.
+separado cuántos repositorios de componentes y Pocketools están configurados;
+`[C]` y `[P]` abren directamente cada catálogo.
 Al explorar, instalar o actualizar un componente, EAP muestra si su definición
 procede del catálogo de bootstrap o de un repositorio externo concreto; para
 este último también presenta su URL y revisión.
@@ -278,7 +279,10 @@ declarativos y sólo pueden seleccionar resolvers y validadores incluidos en EAP
 no se descarga ni ejecuta Python desde repositorios de componentes.
 
 La pantalla principal muestra el tamaño y número de archivos de `temp`, seguido
-del número de fuentes configuradas para componentes y Pocketools. La acción
+del número de fuentes configuradas para componentes y Pocketools. Sus accesos
+contextuales permiten cambiar workspace (`[W]`) o datos (`[D]`) y limpiar
+temporales (`[T]`). Los componentes instalados se numeran en el mismo orden
+visual para abrir directamente sus acciones. La acción
 `Opciones avanzadas > [4] Limpiar temporales` y `tool clean-temp` eliminan
 descargas, staging,
 transacciones y logs, pero se niegan a ejecutarse mientras hay otra operación EAP
