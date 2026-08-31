@@ -2767,6 +2767,129 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual("local", environment["SHARED_TOKEN"])
             self.assertEqual("private", environment["PROJECT_TOKEN"])
 
+    def test_windows_trust_is_profile_scoped_and_published(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            paths.config.write_text(
+                "http_proxy=http://proxy.internal:8080\n"
+                "https_proxy=http://proxy.internal:8443\n"
+                "no_proxy=localhost,.internal\n",
+                encoding="utf-8",
+            )
+            store = EnvironmentStore(paths)
+            files = store.create("default")
+            files.config.write_text(
+                "# Privado\n"
+                "env.PROJECT_TOKEN=private\n"
+                "env.NODE_TLS_REJECT_UNAUTHORIZED=0\n"
+                "env.GIT_SSL_NO_VERIFY=true\n",
+                encoding="utf-8",
+            )
+            store.set_windows_trust("default", True)
+            self.assertTrue(store.windows_trust_enabled("default"))
+            self.assertIn(
+                "env.PROJECT_TOKEN=private",
+                files.config.read_text(encoding="utf-8"),
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "PATH": r"C:\Windows\System32",
+                        "JAVA_TOOL_OPTIONS": (
+                            "-Dfile.encoding=UTF-8 "
+                            "-Djavax.net.ssl.trustStore=C:\\old"
+                        ),
+                    },
+                    clear=True,
+                ),
+                patch.object(
+                    EnvironmentStore,
+                    "_windows_root_ca_pem",
+                    return_value=(
+                        "-----BEGIN CERTIFICATE-----\n"
+                        "VEVTVA==\n"
+                        "-----END CERTIFICATE-----\n"
+                    ),
+                ),
+            ):
+                environment = store.build_process_environment(
+                    "default", Catalog(paths, {}, {})
+                )
+            bundle = (
+                paths.data
+                / "profiles"
+                / "default"
+                / "trust"
+                / "windows-root-ca.pem"
+            )
+            self.assertTrue(bundle.is_file())
+            self.assertEqual("1", environment["NODE_USE_SYSTEM_CA"])
+            self.assertEqual("1", environment["NODE_USE_ENV_PROXY"])
+            self.assertEqual(str(bundle), environment["NODE_EXTRA_CA_CERTS"])
+            self.assertEqual("true", environment["NPM_CONFIG_STRICT_SSL"])
+            self.assertEqual(
+                "1", environment["NODE_TLS_REJECT_UNAUTHORIZED"]
+            )
+            self.assertEqual("false", environment["GIT_SSL_NO_VERIFY"])
+            self.assertEqual(str(bundle), environment["SSL_CERT_FILE"])
+            self.assertEqual(str(bundle), environment["REQUESTS_CA_BUNDLE"])
+            self.assertIn(
+                "-Dfile.encoding=UTF-8", environment["JAVA_TOOL_OPTIONS"]
+            )
+            self.assertIn(
+                "-Djavax.net.ssl.trustStore=NONE",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertIn(
+                "-Djavax.net.ssl.trustStoreType=Windows-ROOT",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertGreater(
+                environment["JAVA_TOOL_OPTIONS"].rfind(
+                    "-Djavax.net.ssl.trustStore=NONE"
+                ),
+                environment["JAVA_TOOL_OPTIONS"].rfind(
+                    "-Djavax.net.ssl.trustStore=C:\\old"
+                ),
+            )
+            self.assertIn(
+                "-Dhttps.proxyHost=proxy.internal",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertIn(
+                "-Dhttps.proxyPort=8443",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertIn(
+                "-Dhttp.nonProxyHosts=localhost|*.internal",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+
+            store.set_windows_trust("default", False)
+            self.assertFalse(store.windows_trust_enabled("default"))
+            self.assertEqual(
+                1,
+                files.config.read_text(encoding="utf-8").count(
+                    "trust.windows="
+                ),
+            )
+
+    def test_windows_trust_rejects_invalid_boolean(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            store = EnvironmentStore(paths)
+            files = store.create("default")
+            files.config.write_text(
+                "trust.windows=quizá\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "Booleano inválido para trust.windows"
+            ):
+                store.windows_trust_enabled("default")
+
     def test_global_proxy_properties_are_published_on_profile_activation(
         self,
     ) -> None:
@@ -5007,6 +5130,29 @@ class HostIntegrationTests(unittest.TestCase):
 
 
 class InterfaceTests(unittest.TestCase):
+    def test_cli_trust_enable_routes_to_selected_profile(self) -> None:
+        calls: list[tuple[str, bool]] = []
+        app = SimpleNamespace(
+            environments=SimpleNamespace(read_desired=lambda profile: {}),
+            set_windows_trust=lambda profile, enabled: (
+                calls.append((profile, enabled))
+                or {
+                    "schemaVersion": 1,
+                    "profile": profile,
+                    "enabled": enabled,
+                }
+            ),
+        )
+        arguments = cli_module.build_parser().parse_args(
+            ["trust", "enable", "--profile", "desarrollo", "--json"]
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            code = cli_module.dispatch(app, arguments)
+        self.assertEqual(0, code)
+        self.assertEqual([("desarrollo", True)], calls)
+        self.assertEqual("desarrollo", json.loads(output.getvalue())["profile"])
+
     def test_pythonw_launch_does_not_require_console_streams(self) -> None:
         launched: list[tuple[str, str]] = []
         launcher = SimpleNamespace(

@@ -709,6 +709,19 @@ class EapApplication:
         self.environments.duplicate(source_profile_id, target_profile_id)
         self._invalidate_update_cache(target_profile_id)
 
+    def windows_trust_status(self, profile_id: str) -> dict[str, Any]:
+        return {
+            "schemaVersion": 1,
+            "profile": profile_id,
+            "enabled": self.environments.windows_trust_enabled(profile_id),
+        }
+
+    def set_windows_trust(
+        self, profile_id: str, enabled: bool
+    ) -> dict[str, Any]:
+        self.environments.set_windows_trust(profile_id, enabled)
+        return self.windows_trust_status(profile_id)
+
     def delete_profile(self, profile_id: str) -> str | None:
         self._invalidate_update_cache(profile_id)
         return self.environments.delete(profile_id)

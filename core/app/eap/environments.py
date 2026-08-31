@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import ssl
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .catalog import Catalog, ComponentDefinition
 from .config import load_properties
@@ -800,6 +802,7 @@ class EnvironmentStore:
         apply_proxy_environment(
             environment, load_properties(self.paths.config)
         )
+        self._apply_windows_trust(environment, environment_id, profile)
         return environment
 
     def component_data_entries(
@@ -944,6 +947,160 @@ class EnvironmentStore:
                     )
                 merged[name.casefold()] = (name, value)
         return {name: value for name, value in merged.values()}
+
+    def windows_trust_enabled(self, environment_id: str) -> bool:
+        properties = load_properties(self.ensure_config(environment_id))
+        raw_value = properties.get("trust.windows", "false").strip().lower()
+        if raw_value in {"true", "yes", "1", "on"}:
+            return True
+        if raw_value in {"false", "no", "0", "off"}:
+            return False
+        raise ValidationError(
+            "Booleano inválido para trust.windows: "
+            f"{properties['trust.windows']!r}"
+        )
+
+    def set_windows_trust(self, environment_id: str, enabled: bool) -> Path:
+        config_path = self.ensure_config(environment_id)
+        # Validate the complete file before preserving its comments and order.
+        load_properties(config_path)
+        lines = config_path.read_text(encoding="utf-8-sig").splitlines()
+        replacement = f"trust.windows={'true' if enabled else 'false'}"
+        updated: list[str] = []
+        found = False
+        for line in lines:
+            stripped = line.strip()
+            if (
+                stripped
+                and not stripped.startswith(("#", ";", "!"))
+                and "=" in stripped
+                and stripped.split("=", 1)[0].strip().casefold()
+                == "trust.windows"
+            ):
+                if not found:
+                    updated.append(replacement)
+                    found = True
+                continue
+            updated.append(line)
+        if not found:
+            if updated and updated[-1]:
+                updated.append("")
+            updated.append(replacement)
+        atomic_write_text(config_path, "\n".join(updated) + "\n")
+        return config_path
+
+    @staticmethod
+    def _windows_root_ca_pem() -> str:
+        if os.name != "nt" or not hasattr(ssl, "enum_certificates"):
+            raise ValidationError(
+                "La confianza de Windows sólo está disponible en Windows"
+            )
+        certificates: dict[bytes, str] = {}
+        for raw_certificate, encoding, _trust in ssl.enum_certificates("ROOT"):
+            if encoding != "x509_asn":
+                continue
+            certificates[raw_certificate] = ssl.DER_cert_to_PEM_cert(
+                raw_certificate
+            )
+        if not certificates:
+            raise ValidationError(
+                "El almacén raíz de Windows no contiene certificados exportables"
+            )
+        return "".join(
+            certificates[raw]
+            for raw in sorted(certificates, key=lambda value: value.hex())
+        )
+
+    def _ensure_windows_root_bundle(self, profile: Path) -> Path:
+        trust_root = self.paths.require_within_root(profile / "trust")
+        trust_root.mkdir(parents=True, exist_ok=True)
+        bundle = self.paths.require_within_root(
+            trust_root / "windows-root-ca.pem"
+        )
+        content = self._windows_root_ca_pem()
+        if not bundle.is_file() or bundle.read_text(encoding="ascii") != content:
+            atomic_write_text(bundle, content)
+        return bundle
+
+    def _apply_windows_trust(
+        self,
+        environment: dict[str, str],
+        environment_id: str,
+        profile: Path,
+    ) -> None:
+        if not self.windows_trust_enabled(environment_id):
+            return
+        bundle = self._ensure_windows_root_bundle(profile)
+        java_options = environment.get("JAVA_TOOL_OPTIONS", "").strip()
+        trust_options = (
+            "-Djavax.net.ssl.trustStore=NONE "
+            "-Djavax.net.ssl.trustStoreType=Windows-ROOT"
+        )
+        java_proxy_options: list[str] = []
+        for scheme in ("http", "https"):
+            proxy_value = environment.get(f"{scheme}_proxy", "")
+            parsed = urlparse(proxy_value)
+            if not parsed.hostname:
+                continue
+            java_proxy_options.extend(
+                [
+                    f"-D{scheme}.proxyHost={parsed.hostname}",
+                    f"-D{scheme}.proxyPort={parsed.port or 80}",
+                ]
+            )
+        no_proxy = environment.get("no_proxy", "")
+        if no_proxy:
+            non_proxy_hosts = []
+            for raw_item in no_proxy.split(","):
+                item = raw_item.strip().split(":", 1)[0]
+                if not item:
+                    continue
+                if item.startswith("."):
+                    item = f"*{item}"
+                non_proxy_hosts.append(item)
+            if non_proxy_hosts:
+                java_proxy_options.append(
+                    "-Dhttp.nonProxyHosts=" + "|".join(non_proxy_hosts)
+                )
+        if (
+            "-Djavax.net.ssl.trustStore=NONE" not in java_options
+            or "-Djavax.net.ssl.trustStoreType=Windows-ROOT"
+            not in java_options
+        ):
+            java_options = " ".join(
+                item for item in (java_options, trust_options) if item
+            )
+        for option in java_proxy_options:
+            property_name = option.split("=", 1)[0]
+            if property_name not in java_options:
+                java_options = " ".join(
+                    item for item in (java_options, option) if item
+                )
+        environment["JAVA_TOOL_OPTIONS"] = java_options
+        secure_overrides = {
+            "NODE_TLS_REJECT_UNAUTHORIZED": "1",
+            "NPM_CONFIG_STRICT_SSL": "true",
+            "GIT_SSL_NO_VERIFY": "false",
+            "PYTHONHTTPSVERIFY": "1",
+        }
+        secured_names = {name.casefold() for name in secure_overrides}
+        for existing_name in list(environment):
+            if existing_name.casefold() in secured_names:
+                environment.pop(existing_name)
+        environment.update(
+            {
+                **secure_overrides,
+                "NODE_USE_SYSTEM_CA": "1",
+                "NODE_EXTRA_CA_CERTS": str(bundle),
+                "SSL_CERT_FILE": str(bundle),
+                "REQUESTS_CA_BUNDLE": str(bundle),
+                "PIP_CERT": str(bundle),
+                "CURL_CA_BUNDLE": str(bundle),
+                "GIT_SSL_CAINFO": str(bundle),
+            }
+        )
+        if environment.get("https_proxy") or environment.get("http_proxy"):
+            environment["NODE_USE_ENV_PROXY"] = "1"
 
     def _apply_configured_environment_variables(
         self,

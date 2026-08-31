@@ -271,6 +271,23 @@ def build_parser() -> argparse.ArgumentParser:
     proxy_authenticate.add_argument("--force", action="store_true")
     proxy_authenticate.add_argument("--json", action="store_true")
 
+    trust_parser = subparsers.add_parser(
+        "trust", help="integrar la confianza TLS de Windows en un profile"
+    )
+    trust_subparsers = trust_parser.add_subparsers(
+        dest="trust_command", required=True
+    )
+    for trust_action, trust_help in (
+        ("status", "mostrar la política de confianza del profile"),
+        ("enable", "activar la confianza de Windows"),
+        ("disable", "desactivar la confianza de Windows"),
+    ):
+        trust_command = trust_subparsers.add_parser(
+            trust_action, help=trust_help
+        )
+        _add_profile_argument(trust_command)
+        trust_command.add_argument("--json", action="store_true")
+
     shell_parser = subparsers.add_parser("shell", help="abrir shell activado")
     _add_profile_argument(shell_parser)
     shell_parser.add_argument(
@@ -552,6 +569,27 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
             else:
                 print(result.detail)
             return 0
+
+    if arguments.command == "trust":
+        environment_id = _require_environment(app, arguments.environment)
+        if arguments.trust_command == "status":
+            result = app.windows_trust_status(environment_id)
+        else:
+            result = app.set_windows_trust(
+                environment_id,
+                enabled=arguments.trust_command == "enable",
+            )
+        if arguments.json:
+            _print_json(result)
+        else:
+            state = "activada" if result["enabled"] else "desactivada"
+            print(
+                f"Confianza TLS de Windows {state} en "
+                f"{result['profile']}."
+            )
+            if arguments.trust_command != "status":
+                _print_activation_notice(environment_id)
+        return 0
 
     if arguments.command == "terminal":
         if arguments.terminal_command == "start":

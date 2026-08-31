@@ -108,6 +108,9 @@ Comandos útiles:
     eap.cmd tool clean-temp
     eap.cmd proxy status
     eap.cmd proxy authenticate
+    eap.cmd trust status --profile desarrollo
+    eap.cmd trust enable --profile desarrollo
+    eap.cmd trust disable --profile desarrollo
     eap.cmd update --check
     eap.cmd update --yes
     eap.cmd component resolve java --provider temurin --track 21
@@ -795,6 +798,14 @@ se escriben en locks, manifiestos ni diagnósticos. Las propiedades
 `components.repository.<id>` y `pocketools.repository.<id>` permiten combinar
 cualquier número de fuentes HTTPS. `config.properties.example` documenta las
 opciones generales sin contener secretos.
+
+`eap.cmd trust enable --profile <id>` activa para ese profile la confianza TLS
+de Windows. EAP publica automáticamente la configuración compatible para Node,
+npm, Java, Python, pip, Requests, curl y Git, conserva la validación de
+certificados y genera en `data/profiles/<datos>/trust/windows-root-ca.pem` el
+bundle PEM necesario. Java usa el almacén nativo `Windows-ROOT`; no se modifica
+el `cacerts` de ningún componente. `ssltruster`, disponible en el repositorio de
+Pocketools, ofrece la interfaz recomendada para aprobar y revalidar URLs.
 
 ## Pruebas
 
