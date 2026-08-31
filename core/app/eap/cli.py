@@ -1471,7 +1471,8 @@ def _run_interactive(
                     )
                 elif info_match := re.fullmatch(r"(\d+)i", option):
                     ordered_inventory = _ordered_inventory(
-                        app, app.inventory(environment_id)
+                        app,
+                        _profile_component_entries(app, environment_id),
                     )
                     selected_index = int(info_match.group(1)) - 1
                     if not 0 <= selected_index < len(ordered_inventory):
@@ -1485,19 +1486,27 @@ def _run_interactive(
                     )
                 elif option.isdigit():
                     ordered_inventory = _ordered_inventory(
-                        app, app.inventory(environment_id)
+                        app,
+                        _profile_component_entries(app, environment_id),
                     )
                     selected_index = int(option) - 1
                     if not 0 <= selected_index < len(ordered_inventory):
                         print("Opción no válida.")
                         _pause_after_result()
                         continue
-                    update_status = _interactive_component_actions(
+                    update_status, changed = _interactive_component_entry(
                         app,
                         environment_id,
                         ordered_inventory[selected_index],
                         update_status,
                     )
+                    if changed:
+                        update_status = _refresh_updates(
+                            app,
+                            environment_id,
+                            previous=update_status,
+                            announce=False,
+                        )
                 elif option in {"q", "quit", "salir"}:
                     return _close_interactive(
                         app, environment_id, shell_on_exit
@@ -1593,13 +1602,14 @@ def _render_main_dashboard(
         else ""
     )
     inventory = app.inventory(environment_id)
+    component_entries = _profile_component_entries(app, environment_id)
     missing_ids = {
         str(item["id"]) for item in _missing_components(app, environment_id)
     }
     component_sections = _inventory_sections(
         app,
         environment_id,
-        inventory,
+        component_entries,
         update_status,
         numbered=True,
         missing_ids=missing_ids,
@@ -1697,7 +1707,7 @@ def _inventory_sections(
     missing_ids: set[str] | None = None,
 ) -> list[tuple[str, list[str]]]:
     if not inventory:
-        return [("Componentes", ["(sin componentes instalados)"])]
+        return [("Componentes", ["(sin componentes descargados)"])]
     missing_ids = missing_ids or set()
     ordered_inventory = _ordered_inventory(app, inventory)
     table_rows: list[list[str]] = []
@@ -1710,7 +1720,12 @@ def _inventory_sections(
                 f"[{index}]" if numbered else str(index),
                 f"{component.display_name} · {item['version']}{missing_marker}",
                 str(provider["displayName"]),
+                str(
+                    item.get("repository")
+                    or _component_repository_id(component, item)
+                ),
                 _component_update_version(component.id, update_status),
+                "Sí" if item.get("active", True) else "No",
                 f"[{index}i]" if numbered else "",
             ]
         )
@@ -1723,7 +1738,15 @@ def _inventory_sections(
 
 
 def _component_table_rows(rows: list[list[str]]) -> list[str]:
-    headers = ["ID", "Nombre", "Proveedor", "Update", "Info"]
+    headers = [
+        "ID",
+        "Nombre",
+        "Proveedor",
+        "Repositorio",
+        "Update",
+        "Active",
+        "Info",
+    ]
     available = _terminal_panel_width() - 4
     gap = "  "
     widths = [
@@ -1734,7 +1757,7 @@ def _component_table_rows(rows: list[list[str]]) -> list[str]:
     while sum(widths) + len(gap) * (len(headers) - 1) > available:
         candidates = [
             index
-            for index in (2, 1, 3, 0, 4)
+            for index in (3, 2, 1, 4, 5, 0, 6)
             if widths[index] > minimums[index]
         ]
         if not candidates:
@@ -1796,8 +1819,56 @@ def _ordered_inventory(
             str(
                 app.catalog.component(str(item["id"])).display_name
             ).casefold(),
+            0 if item.get("active", True) else 1,
+            str(item.get("provider", "")).casefold(),
+            str(item.get("version", "")).casefold(),
         ),
     )
+
+
+def _profile_component_entries(
+    app: EapApplication, environment_id: str
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for item in app.inventory(environment_id):
+        component = app.catalog.component(str(item["id"]))
+        entries.append(
+            {
+                **item,
+                "active": True,
+                "repository": _component_repository_id(component, item),
+            }
+        )
+    payload_loader = getattr(app, "available_component_payloads", None)
+    payloads = payload_loader(environment_id) if callable(payload_loader) else []
+    for payload in payloads:
+        component = app.catalog.component(str(payload.component_id))
+        entries.append(
+            {
+                "id": payload.component_id,
+                "provider": payload.provider,
+                "track": payload.track,
+                "version": payload.version,
+                "installPath": str(payload.install_path),
+                "active": False,
+                "repository": _component_repository_id(component),
+                "_payload": payload,
+            }
+        )
+    return entries
+
+
+def _component_repository_id(
+    component: Any, item: dict[str, Any] | None = None
+) -> str:
+    if item is not None:
+        manifest_source = item.get("manifestSource")
+        if isinstance(manifest_source, dict):
+            source_id = manifest_source.get("id")
+            if isinstance(source_id, str) and source_id.strip():
+                return source_id.strip()
+    source = getattr(component, "source", None)
+    return str(source.id) if source is not None else "bootstrap"
 
 
 def _interactive_catalog(
@@ -1807,8 +1878,10 @@ def _interactive_catalog(
 ) -> dict[str, Any]:
     while True:
         _start_page("Inicio > Catálogo")
-        inventory = app.inventory(environment_id)
-        ordered_inventory = _ordered_inventory(app, inventory)
+        component_entries = _profile_component_entries(
+            app, environment_id
+        )
+        ordered_inventory = _ordered_inventory(app, component_entries)
         missing_ids = {
             str(item["id"])
             for item in _missing_components(app, environment_id)
@@ -1817,20 +1890,21 @@ def _interactive_catalog(
             f"Catálogo de componentes · {environment_id}",
             [
                 (
-                    "Instalados",
+                    "Componentes del profile",
                     [
                         "Seleccione un componente por su número."
-                        if inventory
-                        else "Este profile todavía no tiene componentes.",
+                        if component_entries
+                        else "Este profile todavía no tiene componentes "
+                        "descargados.",
                     ],
                 )
             ],
         )
-        if inventory:
+        if component_entries:
             for title, rows in _inventory_sections(
                 app,
                 environment_id,
-                inventory,
+                component_entries,
                 update_status,
                 numbered=True,
                 missing_ids=missing_ids,
@@ -1890,13 +1964,9 @@ def _interactive_catalog(
             _interactive_component_repositories(app)
             continue
         if option == "n":
-            if _interactive_install_new_component(app, environment_id):
-                update_status = _refresh_updates(
-                    app,
-                    environment_id,
-                    previous=update_status,
-                    announce=False,
-                )
+            update_status = _interactive_install_new_component(
+                app, environment_id, update_status
+            )
             continue
         if option == "a":
             _interactive_activate_component(app, environment_id)
@@ -1912,12 +1982,19 @@ def _interactive_catalog(
             _pause_after_result()
             continue
         selected = ordered_inventory[int(option) - 1]
-        update_status = _interactive_component_actions(
+        update_status, changed = _interactive_component_entry(
             app,
             environment_id,
             selected,
             update_status,
         )
+        if changed:
+            update_status = _refresh_updates(
+                app,
+                environment_id,
+                previous=update_status,
+                announce=False,
+            )
 
 
 def _interactive_activate_component(
@@ -2089,18 +2166,19 @@ def _interactive_component_repositories(app: EapApplication) -> None:
 
 
 def _interactive_install_new_component(
-    app: EapApplication, environment_id: str
-) -> bool:
+    app: EapApplication,
+    environment_id: str,
+    update_status: dict[str, Any],
+) -> dict[str, Any]:
     _start_page("Inicio > Catálogo > Instalar componente")
-    installed_ids = {
-        str(item["id"]) for item in app.inventory(environment_id)
+    active_by_id = {
+        str(item["id"]): item for item in app.inventory(environment_id)
     }
     available = sorted(
         (
             component
             for component in app.catalog.definitions.values()
-            if component.id not in installed_ids
-            and not component.is_external
+            if not component.is_external
         ),
         key=lambda item: item.display_name.casefold(),
     )
@@ -2111,26 +2189,61 @@ def _interactive_install_new_component(
                 (
                     "",
                     [
-                        "Todos los componentes del catálogo están instalados.",
+                        "No hay componentes instalables en el catálogo.",
                         "Pulse Intro o Esc para volver.",
                     ],
                 )
             ],
         )
         _read_input("> ")
-        return False
-    rows = [
-        f"[{index}] {component.display_name} · "
-        f"Fuente: {_component_source_label(component)}"
-        for index, component in enumerate(available, start=1)
-    ]
+        return update_status
+    payloads = app.available_component_payloads(environment_id)
+    payloads_by_id: dict[str, list[Any]] = {}
+    for payload in payloads:
+        payloads_by_id.setdefault(str(payload.component_id), []).append(payload)
+    rows: list[str] = []
+    for index, component in enumerate(available, start=1):
+        active = active_by_id.get(component.id)
+        if active is not None:
+            state = f"activo · {active['version']}"
+        elif component.id in payloads_by_id:
+            state = "descargado · inactivo"
+        else:
+            state = "no instalado"
+        rows.append(
+            f"[{index}] {component.display_name} · {state} · "
+            f"Fuente: {_component_source_label(component)}"
+        )
     rows.append("[Esc] Volver")
-    _print_panel("Catálogo > Instalar nuevo componente", [("", rows)])
+    _print_panel(
+        "Catálogo > Instalar componente",
+        [("Todos los componentes", rows)],
+    )
     selected_index = _read_index(len(available))
     if selected_index is None:
-        return False
-    return _interactive_install_component(
-        app, environment_id, available[selected_index]
+        return update_status
+    component = available[selected_index]
+    active = active_by_id.get(component.id)
+    if active is not None:
+        return _interactive_component_actions(
+            app, environment_id, active, update_status
+        )
+    local_payloads = payloads_by_id.get(component.id, [])
+    if local_payloads:
+        changed = _interactive_downloaded_component(
+            app, environment_id, component, local_payloads
+        )
+    else:
+        changed = _interactive_install_component(
+            app, environment_id, component
+        )
+    if not changed:
+        return update_status
+    return _refresh_updates(
+        app,
+        environment_id,
+        previous=update_status,
+        announce=False,
     )
 
 
@@ -2215,6 +2328,100 @@ def _interactive_link_external_component(
     )
     _pause_after_result()
     return True
+
+
+def _interactive_component_entry(
+    app: EapApplication,
+    environment_id: str,
+    selected: dict[str, Any],
+    update_status: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    if selected.get("active", True):
+        return (
+            _interactive_component_actions(
+                app, environment_id, selected, update_status
+            ),
+            False,
+        )
+    component = app.catalog.component(str(selected["id"]))
+    payload = selected.get("_payload")
+    payloads = [payload] if payload is not None else []
+    if not payloads:
+        payloads = [
+            candidate
+            for candidate in app.available_component_payloads(environment_id)
+            if candidate.component_id == component.id
+        ]
+    if not payloads:
+        return (
+            update_status,
+            _interactive_install_component(app, environment_id, component),
+        )
+    return (
+        update_status,
+        _interactive_downloaded_component(
+            app, environment_id, component, payloads
+        ),
+    )
+
+
+def _interactive_downloaded_component(
+    app: EapApplication,
+    environment_id: str,
+    component: Any,
+    payloads: list[Any],
+) -> bool:
+    while True:
+        _start_page(f"Inicio > Catálogo > {component.display_name}")
+        payload_rows: list[str] = []
+        for index, payload in enumerate(payloads, start=1):
+            availability = (
+                "origen de descarga conservado"
+                if payload.restorable
+                else "sólo disponible localmente"
+            )
+            payload_rows.append(
+                f"[{index}] Activar {payload.provider_name} · "
+                f"{_track_display(component, payload.track)} · "
+                f"{payload.version} · {availability}"
+            )
+        payload_rows.extend(
+            [
+                "[N] Elegir otro proveedor o línea",
+                "[Esc] Volver al catálogo",
+            ]
+        )
+        _print_panel(
+            f"Catálogo > {component.display_name}",
+            [
+                ("Fuente", _component_source_rows(component)),
+                *_component_information_sections(
+                    app, environment_id, component
+                ),
+                ("Descargado · inactivo", payload_rows),
+            ],
+        )
+        option = _read_input("> ").strip().lower()
+        if _is_escape(option) or option in {"v", "volver", "q"}:
+            return False
+        if option == "n":
+            return _interactive_install_component(
+                app, environment_id, component
+            )
+        if not option.isdigit() or not 1 <= int(option) <= len(payloads):
+            print("Opción no válida.")
+            _pause_after_result()
+            continue
+        activated = app.activate_component_payload(
+            environment_id, payloads[int(option) - 1]
+        )
+        print(
+            f"{activated.display_name} {activated.version} activado "
+            f"en {environment_id} desde el payload local."
+        )
+        _print_activation_notice(environment_id)
+        _pause_after_result()
+        return True
 
 
 def _interactive_component_actions(

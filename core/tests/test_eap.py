@@ -5215,6 +5215,167 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("No se descargará ningún archivo", rendered)
         self.assertIn("activado en default desde el payload local", rendered)
 
+    def test_component_table_includes_repository_and_inactive_payloads(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            bundled = java_component(paths.temp / "java.json")
+            component = ComponentDefinition(
+                bundled.manifest_path,
+                bundled.value,
+                ComponentCatalogSource(
+                    "danielgube",
+                    "https://github.com/danielgube/eap-components",
+                    "https://example.test/catalog.json",
+                    "a" * 40,
+                    "github",
+                ),
+                "components/java.json",
+            )
+            payload = SimpleNamespace(
+                component_id="java",
+                display_name="Java JDK",
+                provider="temurin",
+                provider_name="Eclipse Temurin",
+                track=21,
+                version="21.0.12+8",
+                install_path=(
+                    paths.components / "java" / "temurin" / "21.0.12+8"
+                ),
+                restorable=True,
+            )
+            app = SimpleNamespace(
+                catalog=SimpleNamespace(
+                    component=lambda component_id: component
+                ),
+                inventory=lambda environment_id: [],
+                available_component_payloads=lambda environment_id: [payload],
+            )
+
+            entries = cli_module._profile_component_entries(app, "default")
+            [(_, rows)] = cli_module._inventory_sections(
+                app,
+                "default",
+                entries,
+                {"updates": []},
+                numbered=True,
+            )
+            rendered = "\n".join(rows)
+
+            self.assertIn("Repositorio", rendered)
+            self.assertIn("Active", rendered)
+            self.assertIn("danielgube", rendered)
+            self.assertIn("Java JDK · 21.0.12+8", rendered)
+            self.assertRegex(rendered, r"danielgube\s+\sNo\s+\[1i\]")
+
+    def test_inactive_table_entry_can_activate_its_local_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            environments = EnvironmentStore(paths)
+            environments.create("default")
+            component = java_component(paths.temp / "java.json")
+            payload = SimpleNamespace(
+                component_id="java",
+                display_name="Java JDK",
+                provider="temurin",
+                provider_name="Eclipse Temurin",
+                track=21,
+                version="21.0.12+8",
+                install_path=(
+                    paths.components / "java" / "temurin" / "21.0.12+8"
+                ),
+                restorable=True,
+            )
+            activated: list[Any] = []
+            app = SimpleNamespace(
+                paths=paths,
+                environments=environments,
+                catalog=SimpleNamespace(
+                    component=lambda component_id: component
+                ),
+                available_component_payloads=lambda environment_id: [payload],
+                activate_component_payload=lambda environment_id, selected: (
+                    activated.append(selected) or selected
+                ),
+            )
+            selected = {
+                "id": "java",
+                "provider": "temurin",
+                "track": 21,
+                "version": "21.0.12+8",
+                "active": False,
+                "_payload": payload,
+            }
+            status = {"updates": []}
+            output = StringIO()
+            with (
+                patch.object(cli_module, "_read_input", return_value="1"),
+                redirect_stdout(output),
+            ):
+                returned, changed = cli_module._interactive_component_entry(
+                    app, "default", selected, status
+                )
+
+            self.assertIs(status, returned)
+            self.assertTrue(changed)
+            self.assertEqual([payload], activated)
+            self.assertIn("Descargado · inactivo", output.getvalue())
+            self.assertIn("origen de descarga conservado", output.getvalue())
+
+    def test_install_component_catalog_lists_all_and_opens_active_actions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            java = java_component(paths.temp / "java.json")
+            maven = maven_component(paths.temp / "maven.json")
+            active = {
+                "id": "java",
+                "provider": "temurin",
+                "track": 21,
+                "version": "21.0.12+8",
+            }
+            app = SimpleNamespace(
+                catalog=SimpleNamespace(
+                    definitions={"java": java, "maven": maven}
+                ),
+                inventory=lambda environment_id: [active],
+                available_component_payloads=lambda environment_id: [],
+            )
+            status = {
+                "state": "cached",
+                "updates": [],
+                "resolved": [],
+                "error": None,
+            }
+            returned_status = {**status, "opened": "java"}
+            output = StringIO()
+            with (
+                patch.object(cli_module, "_read_input", return_value="2"),
+                patch.object(
+                    cli_module,
+                    "_interactive_component_actions",
+                    return_value=returned_status,
+                ) as actions,
+                redirect_stdout(output),
+            ):
+                result = cli_module._interactive_install_new_component(
+                    app, "default", status
+                )
+
+            self.assertIs(returned_status, result)
+            actions.assert_called_once_with(
+                app, "default", active, status
+            )
+            rendered = output.getvalue()
+            self.assertIn("Apache Maven · no instalado", rendered)
+            self.assertIn("Java JDK · activo · 21.0.12+8", rendered)
+            self.assertIn("Todos los componentes", rendered)
+
     def test_page_start_clears_terminal_and_renders_breadcrumb(self) -> None:
         output = TtyStringIO()
         with (
@@ -5298,8 +5459,24 @@ class InterfaceTests(unittest.TestCase):
 
     def test_color_does_not_change_component_table_layout(self) -> None:
         components = [
-            ["[1]", "Java JDK · 21", "Eclipse Temurin", "25", "[1i]"],
-            ["[2]", "Node.js · 24", "Node.js Foundation", "", "[2i]"],
+            [
+                "[1]",
+                "Java JDK · 21",
+                "Eclipse Temurin",
+                "danielgube",
+                "25",
+                "Sí",
+                "[1i]",
+            ],
+            [
+                "[2]",
+                "Node.js · 24",
+                "Node.js Foundation",
+                "danielgube",
+                "",
+                "No",
+                "[2i]",
+            ],
         ]
 
         def render(color_enabled: bool) -> str:
@@ -6733,11 +6910,15 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("ID", rendered)
             self.assertIn("Nombre", rendered)
             self.assertIn("Proveedor", rendered)
+            self.assertIn("Repositorio", rendered)
             self.assertIn("Update", rendered)
+            self.assertIn("Active", rendered)
             self.assertIn("Info", rendered)
             self.assertIn("[1]", rendered)
             self.assertIn("[1i]", rendered)
             self.assertIn("Java JDK · 21.0.12+8", rendered)
+            self.assertIn("bootstrap", rendered)
+            self.assertIn("Sí", rendered)
             self.assertIn("21.0.13+9", rendered)
             self.assertNotIn("Arrancable:", rendered)
             self.assertNotIn("Actualización:", rendered)

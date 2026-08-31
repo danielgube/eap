@@ -237,7 +237,9 @@ válidos que existen bajo `components` pero no están activos en el profile actu
 La activación reconstruye su selección y lock directamente desde el marcador
 `.eap-install.json`, sin consultar la red ni descargar archivos. Esto permite
 reactivar un componente desactivado y aprovechar inmediatamente los payloads
-incluidos en una exportación completa de EAP.
+incluidos en una exportación completa de EAP. Esos payloads también aparecen en
+la tabla principal con `Active: No`; su acceso numérico abre la misma activación
+local y permite alternativamente elegir otro proveedor o línea.
 
 Los payloads nuevos conservan también su origen exacto de descarga. Al exportar
 EAP con `components`, EAP añade esa metadata a la copia exportada usando los locks
@@ -292,14 +294,19 @@ no se descarga ni ejecuta Python desde repositorios de componentes.
 La pantalla principal muestra el tamaño y número de archivos de `temp`, seguido
 del número de fuentes configuradas para componentes y Pocketools. Sus accesos
 contextuales permiten cambiar workspace (`[W]`) o datos (`[D]`) y limpiar
-temporales (`[T]`). Los componentes instalados se numeran en el mismo orden
-visual dentro de una tabla con columnas `ID`, `Nombre`, `Proveedor`, `Update` e
-`Info`. El acceso numérico (`[1]`, `[2]`, etc.) abre las acciones del componente
-y su variante informativa (`[1i]`, `[2i]`, etc.) muestra la
+temporales (`[T]`). Los componentes activos y los payloads descargados pero
+inactivos se numeran en el mismo orden visual dentro de una tabla con columnas
+`ID`, `Nombre`, `Proveedor`, `Repositorio`, `Update`, `Active` e `Info`.
+`Repositorio` identifica la fuente del manifiesto (`bootstrap`, `danielgube`,
+etc.) y `Active` distingue la selección del profile de un payload meramente
+disponible en disco. El acceso numérico (`[1]`, `[2]`, etc.) abre las acciones
+del componente y su variante informativa (`[1i]`, `[2i]`, etc.) muestra la
 descripción y las rutas importantes resueltas de forma absoluta para el profile
 activo. `Update` queda vacía cuando no hay una actualización disponible y, si la
-hay, contiene únicamente su versión. La misma información se presenta antes de
-elegir proveedor y línea al instalar un componente.
+hay, contiene únicamente su versión. `Instalar componente` muestra siempre el
+catálogo completo e indica si cada entrada está activa, descargada e inactiva o
+no instalada. Seleccionar una entrada activa abre su ficha normal del catálogo;
+las demás permiten reactivar el payload local o elegir proveedor y línea.
 
 Cada manifiesto `components/*.json` debe declarar `info.description` e
 `info.paths`. Las rutas se expresan mediante `base` (`profile` o `workspace`) y
