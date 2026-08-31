@@ -197,6 +197,13 @@ y queda un CMD activado del profile seleccionado. Para depuración o automatizac
 que lo invocó. También puede iniciarse expresamente mediante
 `eap.cmd terminal start --profile <profile>`.
 
+La interfaz interactiva funciona como una navegación por páginas: limpia la
+pantalla antes de dibujar cada vista y mantiene arriba un recuadro `Navegación`
+con un breadcrumb que parte de `Inicio`. Antes de abandonar una vista que acaba
+de mostrar un resultado normal o un error, espera una tecla; así el siguiente
+redibujado no oculta el mensaje antes de que pueda leerse. La salida redirigida a
+un archivo o pipe no recibe secuencias de limpieza de terminal.
+
 Las pestañas activadas publican `core\commands` de forma explícita en `PATH`.
 Esto permite ejecutar `eap`, `eap doctor` o cualquier otro subcomando sin conocer
 la ubicación física del lanzador. El runtime `core\tools\python-embed` continúa fuera

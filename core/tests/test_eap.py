@@ -5069,6 +5069,50 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("No se descargará ningún archivo", rendered)
         self.assertIn("activado en default desde el payload local", rendered)
 
+    def test_page_start_clears_terminal_and_renders_breadcrumb(self) -> None:
+        output = TtyStringIO()
+        with (
+            patch.object(cli_module, "_INTERACTIVE_ACTIVE", True),
+            redirect_stdout(output),
+        ):
+            cli_module._start_page("Inicio > Catálogo > Node.js")
+
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("\x1b[2J\x1b[H"))
+        self.assertIn("Navegación", rendered)
+        self.assertIn("Inicio > Catálogo > Node.js", rendered)
+
+    def test_page_start_keeps_redirected_output_free_of_clear_codes(
+        self,
+    ) -> None:
+        output = StringIO()
+        with (
+            patch.object(cli_module, "_INTERACTIVE_ACTIVE", True),
+            redirect_stdout(output),
+        ):
+            cli_module._start_page("Inicio")
+
+        rendered = output.getvalue()
+        self.assertNotIn("\x1b[2J", rendered)
+        self.assertIn("Inicio", rendered)
+
+    def test_interactive_results_and_errors_wait_for_acknowledgement(
+        self,
+    ) -> None:
+        error_output = StringIO()
+        with (
+            patch.object(cli_module, "_INTERACTIVE_ACTIVE", True),
+            patch.object(
+                cli_module, "_pause_for_acknowledgement"
+            ) as pause,
+            redirect_stderr(error_output),
+        ):
+            cli_module._pause_after_result()
+            cli_module._print_error("fallo interactivo")
+
+        self.assertEqual(2, pause.call_count)
+        self.assertIn("ERROR: fallo interactivo", error_output.getvalue())
+
     def test_panel_color_is_added_after_width_calculation(self) -> None:
         output = TtyStringIO()
         with (
@@ -6363,6 +6407,8 @@ class InterfaceTests(unittest.TestCase):
 
     def test_catalog_adds_external_component_from_executable_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
             component = external_component(
                 Path(temporary) / "core" / "catalog" / "kiro.json"
             )
@@ -6371,6 +6417,13 @@ class InterfaceTests(unittest.TestCase):
             executable.touch()
             linked: list[tuple[str, str, Path]] = []
             app = SimpleNamespace(
+                paths=paths,
+                environments=SimpleNamespace(
+                    read_desired=lambda environment_id: {
+                        "workspace": environment_id,
+                        "dataProfile": environment_id,
+                    }
+                ),
                 inventory=lambda environment_id: [],
                 catalog=SimpleNamespace(definitions={"kiro": component}),
                 link_external_component=(
@@ -6523,6 +6576,12 @@ class InterfaceTests(unittest.TestCase):
             ):
                 _render_main_dashboard(app, "default", status)
             rendered = output.getvalue()
+            self.assertIn("┌─ Navegación", rendered)
+            self.assertIn("Inicio", rendered)
+            self.assertLess(
+                rendered.index("┌─ Navegación"),
+                rendered.index("┌─ Acciones "),
+            )
             self.assertIn("┌─ EAP 0.2.0", rendered)
             self.assertIn("┌─ Componentes (3)", rendered)
             self.assertIn("ID", rendered)

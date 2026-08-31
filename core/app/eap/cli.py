@@ -28,6 +28,7 @@ _ANSI_GREEN = "\x1b[32m"
 _ANSI_YELLOW = "\x1b[33m"
 _ANSI_RED = "\x1b[31m"
 _COLOR_ENABLED = False
+_INTERACTIVE_ACTIVE = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1364,6 +1365,21 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
 def interactive(
     app: EapApplication, shell_on_exit: bool = False
 ) -> int:
+    global _INTERACTIVE_ACTIVE
+    previous = _INTERACTIVE_ACTIVE
+    _INTERACTIVE_ACTIVE = True
+    try:
+        return _run_interactive(app, shell_on_exit)
+    except EapError as exc:
+        _print_error(str(exc))
+        return 1
+    finally:
+        _INTERACTIVE_ACTIVE = previous
+
+
+def _run_interactive(
+    app: EapApplication, shell_on_exit: bool = False
+) -> int:
     with console_title("EAP"):
         environment_id = _ensure_interactive_environment(app)
         if environment_id is None:
@@ -1422,6 +1438,7 @@ def interactive(
                     selected_index = int(info_match.group(1)) - 1
                     if not 0 <= selected_index < len(ordered_inventory):
                         print("Opción no válida.")
+                        _pause_after_result()
                         continue
                     selected = ordered_inventory[selected_index]
                     component = app.catalog.component(str(selected["id"]))
@@ -1435,6 +1452,7 @@ def interactive(
                     selected_index = int(option) - 1
                     if not 0 <= selected_index < len(ordered_inventory):
                         print("Opción no válida.")
+                        _pause_after_result()
                         continue
                     update_status = _interactive_component_actions(
                         app,
@@ -1448,6 +1466,7 @@ def interactive(
                     )
                 else:
                     print("Opción no válida.")
+                    _pause_after_result()
             except EapError as exc:
                 _print_error(str(exc), pause=True)
 
@@ -1515,6 +1534,7 @@ def _render_main_dashboard(
     environment_id: str,
     update_status: dict[str, Any],
 ) -> None:
+    _start_page("Inicio")
     desired = app.environments.read_desired(environment_id)
     profile_path = (
         app.paths.data / "profiles" / str(desired["dataProfile"])
@@ -1748,6 +1768,7 @@ def _interactive_catalog(
     update_status: dict[str, Any],
 ) -> dict[str, Any]:
     while True:
+        _start_page("Inicio > Catálogo")
         inventory = app.inventory(environment_id)
         ordered_inventory = _ordered_inventory(app, inventory)
         missing_ids = {
@@ -1801,6 +1822,7 @@ def _interactive_catalog(
             selected_index = int(info_match.group(1)) - 1
             if not 0 <= selected_index < len(ordered_inventory):
                 print("Opción no válida.")
+                _pause_after_result()
                 continue
             selected = ordered_inventory[selected_index]
             component = app.catalog.component(str(selected["id"]))
@@ -1824,6 +1846,7 @@ def _interactive_catalog(
                 f"componente(s) · {len(catalog.sources)} "
                 "repositorio(s)."
             )
+            _pause_after_result()
             continue
         if option == "g":
             _interactive_component_repositories(app)
@@ -1848,6 +1871,7 @@ def _interactive_catalog(
             or not 1 <= int(option) <= len(ordered_inventory)
         ):
             print("Opción no válida.")
+            _pause_after_result()
             continue
         selected = ordered_inventory[int(option) - 1]
         update_status = _interactive_component_actions(
@@ -1861,6 +1885,7 @@ def _interactive_catalog(
 def _interactive_activate_component(
     app: EapApplication, environment_id: str
 ) -> bool:
+    _start_page("Inicio > Catálogo > Activar componentes")
     payloads = app.available_component_payloads(environment_id)
     if not payloads:
         _print_panel(
@@ -1919,11 +1944,13 @@ def _interactive_activate_component(
         f"en {environment_id} desde el payload local."
     )
     _print_activation_notice(environment_id)
+    _pause_after_result()
     return True
 
 
 def _interactive_component_repositories(app: EapApplication) -> None:
     while True:
+        _start_page("Inicio > Catálogo > Repositorios")
         sources = app.component_repositories.cached_sources()
         repository_rows: list[str] = []
         for source in sources:
@@ -1987,10 +2014,12 @@ def _interactive_component_repositories(app: EapApplication) -> None:
                 app.add_component_repository(source_id, url)
                 print(f"Repositorio añadido: {source_id}")
                 print("Use Actualizar catálogos para descargarlo.")
+                _pause_after_result()
             continue
         if option == "2":
             if not sources:
                 print("No hay repositorios que quitar.")
+                _pause_after_result()
                 continue
             choices = [
                 f"[{index}] {source['id']} · {source['repositoryUrl']}"
@@ -2005,6 +2034,7 @@ def _interactive_component_repositories(app: EapApplication) -> None:
             if _confirm(f"¿Quitar el repositorio {selected['id']}?"):
                 app.remove_component_repository(str(selected["id"]))
                 print(f"Repositorio eliminado: {selected['id']}")
+                _pause_after_result()
             continue
         if option == "3":
             print("Actualizando catálogos de componentes...")
@@ -2014,13 +2044,16 @@ def _interactive_component_repositories(app: EapApplication) -> None:
                 f"componente(s) · {len(catalog.sources)} "
                 "repositorio(s)."
             )
+            _pause_after_result()
             continue
         print("Opción no válida.")
+        _pause_after_result()
 
 
 def _interactive_install_new_component(
     app: EapApplication, environment_id: str
 ) -> bool:
+    _start_page("Inicio > Catálogo > Instalar componente")
     installed_ids = {
         str(item["id"]) for item in app.inventory(environment_id)
     }
@@ -2066,6 +2099,7 @@ def _interactive_install_new_component(
 def _interactive_add_external_component(
     app: EapApplication, environment_id: str
 ) -> bool:
+    _start_page("Inicio > Catálogo > Agregar componente externo")
     installed_ids = {
         str(item["id"]) for item in app.inventory(environment_id)
     }
@@ -2116,6 +2150,18 @@ def _interactive_link_external_component(
     environment_id: str,
     component: Any,
 ) -> bool:
+    _start_page(
+        f"Inicio > Catálogo > {component.display_name} > Vincular"
+    )
+    _print_panel(
+        f"Vincular {component.display_name}",
+        [
+            ("Fuente", _component_source_rows(component)),
+            *_component_information_sections(
+                app, environment_id, component
+            ),
+        ],
+    )
     prompt = str(component.value["install"]["prompt"])
     raw_path = _read_input(f"{prompt} [Esc]: ").strip()
     if _is_escape(raw_path) or not raw_path:
@@ -2129,6 +2175,7 @@ def _interactive_link_external_component(
         f"{component.display_name} vinculado en {environment_id}: "
         f"{executable}"
     )
+    _pause_after_result()
     return True
 
 
@@ -2141,6 +2188,7 @@ def _interactive_component_actions(
     component_id = str(selected["id"])
     component = app.catalog.component(component_id)
     while True:
+        _start_page(f"Inicio > Catálogo > {component.display_name}")
         active = _active_component(app, environment_id, component_id)
         if active is None:
             return update_status
@@ -2249,6 +2297,7 @@ def _interactive_component_actions(
         )
         if action is None:
             print("Opción no válida.")
+            _pause_after_result()
             continue
         if action == "update":
             update_status = _interactive_update_component(
@@ -2275,6 +2324,7 @@ def _interactive_component_actions(
             restored = app.restore_missing_components(environment_id)
             print(f"Components restaurados: {len(restored)}")
             _print_activation_notice(environment_id)
+            _pause_after_result()
             continue
         if action == "disable":
             _print_panel(
@@ -2297,6 +2347,7 @@ def _interactive_component_actions(
                 f"{environment_id}."
             )
             _print_activation_notice(environment_id)
+            _pause_after_result()
             update_status["updates"] = [
                 item
                 for item in update_status.get("updates", [])
@@ -2333,6 +2384,7 @@ def _interactive_component_actions(
             )
             _print_uninstall_result(component.display_name, result)
             _print_activation_notice(environment_id)
+            _pause_after_result()
             update_status["updates"] = [
                 item
                 for item in update_status.get("updates", [])
@@ -2354,6 +2406,7 @@ def _interactive_component_actions(
             result = app.launch(environment_id, launcher.id)
             if launcher.start_mode == "detached":
                 print(f"{launcher.display_name} arrancado · PID {result}")
+                _pause_after_result()
             continue
         shortcut_environment_id = _select_shortcut_profile(
             app, environment_id, launcher.id
@@ -2364,6 +2417,7 @@ def _interactive_component_actions(
             shortcut_environment_id, launcher.id
         )
         print(f"Acceso directo creado: {shortcut.path}")
+        _pause_after_result()
 
 
 def _external_selection_rows(
@@ -2391,6 +2445,7 @@ def _select_component_launcher(launchers: list[Any]) -> Any | None:
         for index, launcher in enumerate(launchers, start=1)
     ]
     rows.append("[Esc] Volver")
+    _start_page("Inicio > Catálogo > Lanzar aplicación")
     _print_panel("Seleccione una aplicación", [("", rows)])
     selected_index = _read_index(len(launchers))
     if selected_index is None:
@@ -2410,6 +2465,7 @@ def _select_shortcut_profile(
         marker = " (actual)" if profile_id == current_profile_id else ""
         rows.append(f"[{index}] {profile_id}{marker}")
     rows.append("[Esc] Volver")
+    _start_page("Inicio > Catálogo > Crear acceso directo")
     _print_panel("Profile del acceso directo", [("", rows)])
 
     while True:
@@ -2425,6 +2481,7 @@ def _select_shortcut_profile(
         print(
             f"{launcher_id} no está disponible en el profile {selected}."
         )
+        _pause_after_result()
 
 
 def _interactive_update_component(
@@ -2433,6 +2490,10 @@ def _interactive_update_component(
     selected: dict[str, Any],
     update_status: dict[str, Any],
 ) -> dict[str, Any]:
+    component = app.catalog.component(str(selected["id"]))
+    _start_page(
+        f"Inicio > Catálogo > {component.display_name} > Actualizar"
+    )
     update_status = _refresh_updates(
         app,
         environment_id,
@@ -2447,7 +2508,6 @@ def _interactive_update_component(
         ),
         None,
     )
-    component = app.catalog.component(str(selected["id"]))
     if update is None:
         message = (
             "No se puede confirmar la actualización sin conexión."
@@ -2486,6 +2546,7 @@ def _interactive_update_component(
     )
     print(f"Actualizado a {artifact.version}: {path}")
     _print_activation_notice(environment_id)
+    _pause_after_result()
     return _refresh_updates(
         app,
         environment_id,
@@ -2504,6 +2565,7 @@ def _interactive_install_component(
             app, environment_id, component
         )
     while True:
+        _start_page(f"Inicio > Catálogo > {component.display_name}")
         active = _active_component(
             app, environment_id, component.id
         )
@@ -2537,6 +2599,10 @@ def _interactive_install_component(
         provider = str(provider_definition["id"])
 
         while True:
+            _start_page(
+                f"Inicio > Catálogo > {component.display_name} > "
+                f"{provider_definition['displayName']}"
+            )
             active = _active_component(
                 app, environment_id, component.id
             )
@@ -2576,6 +2642,10 @@ def _interactive_install_component(
                 and str(active["track"]) == str(track)
                 and active["version"] == artifact.version
             ):
+                _start_page(
+                    f"Inicio > Catálogo > {component.display_name} > "
+                    "Selección activa"
+                )
                 _print_panel(
                     f"Catálogo > {component.display_name}",
                     [
@@ -2608,6 +2678,9 @@ def _interactive_install_component(
                 plan_rows.append(
                     "La nueva selección sustituirá a la actual en este profile."
                 )
+            _start_page(
+                f"Inicio > Catálogo > {component.display_name} > Instalar"
+            )
             _print_panel(
                 f"Catálogo > {component.display_name} > Instalar",
                 [("Plan", plan_rows)],
@@ -2615,6 +2688,7 @@ def _interactive_install_component(
             _print_resolution(artifact)
             if not _confirm("¿Descargar e instalar?"):
                 print("Cancelado.")
+                _pause_after_result()
                 continue
             _, path = app.install(
                 environment_id,
@@ -2628,6 +2702,7 @@ def _interactive_install_component(
                 f"{environment_id}: {path}"
             )
             _print_activation_notice(environment_id)
+            _pause_after_result()
             return True
 
 
@@ -2698,6 +2773,7 @@ def _interactive_component_information(
     environment_id: str,
     component: Any,
 ) -> None:
+    _start_page(f"Inicio > Información > {component.display_name}")
     _print_panel(
         f"Información > {component.display_name}",
         [
@@ -2770,6 +2846,17 @@ def _print_panel(
             _ANSI_CYAN,
         )
     )
+
+
+def _start_page(breadcrumb: str) -> None:
+    _clear_screen()
+    _print_panel("Navegación", [("", [breadcrumb])])
+
+
+def _clear_screen() -> None:
+    if not _INTERACTIVE_ACTIVE or not _stream_is_terminal(sys.stdout):
+        return
+    print("\x1b[2J\x1b[H", end="", flush=True)
 
 
 def _terminal_panel_width() -> int:
@@ -2881,11 +2968,20 @@ def _print_error(message: str, *, pause: bool = False) -> None:
             _style(f"ERROR: {message}", _ANSI_RED, stream=sys.stderr),
             file=sys.stderr,
         )
-    if pause:
-        _pause_after_error()
+    if pause or _INTERACTIVE_ACTIVE:
+        _pause_for_acknowledgement()
 
 
 def _pause_after_error() -> None:
+    _pause_for_acknowledgement()
+
+
+def _pause_after_result() -> None:
+    if _INTERACTIVE_ACTIVE:
+        _pause_for_acknowledgement()
+
+
+def _pause_for_acknowledgement() -> None:
     if not (
         _stream_is_terminal(sys.stdin) and _stream_is_terminal(sys.stdout)
     ):
@@ -2912,9 +3008,11 @@ def _ensure_interactive_environment(app: EapApplication) -> str | None:
     if selected:
         return selected
     environments = app.environments.list()
+    _start_page("Inicio > Seleccionar profile")
     if not environments:
         print('EAP no tiene profiles. Se creará "default".')
         app.environments.create(configured)
+        _pause_after_result()
         return configured
     print("Seleccione un profile:")
     for index, name in enumerate(environments, start=1):
@@ -2929,6 +3027,7 @@ def _ensure_interactive_environment(app: EapApplication) -> str | None:
             app.environments.select(selected)
             return selected
         print("Selección no válida.")
+        _pause_after_result()
 
 
 def _interactive_manage_environments(
@@ -2936,6 +3035,7 @@ def _interactive_manage_environments(
 ) -> str:
     environments = app.environments.list()
     desired = app.environments.read_desired(current)
+    _start_page("Inicio > Gestionar profile")
     _print_panel(
         "Gestionar profile",
         [
@@ -2968,6 +3068,7 @@ def _interactive_manage_environments(
     if _is_escape(option):
         return current
     if option == "1":
+        _start_page("Inicio > Gestionar profile > Seleccionar")
         for index, name in enumerate(environments, start=1):
             marker = " (actual)" if name == current else ""
             candidate = app.environments.read_desired(name)
@@ -3004,12 +3105,14 @@ def _interactive_manage_environments(
     if option == "9":
         return _interactive_delete_environment(app, current)
     print("Opción no válida.")
+    _pause_after_result()
     return current
 
 
 def _interactive_change_workspace(
     app: EapApplication, current: str
 ) -> None:
+    _start_page("Inicio > Gestionar profile > Cambiar workspace")
     desired = app.environments.read_desired(current)
     workspace = _read_input(
         f"Workspace [{desired['workspace']}]: "
@@ -3018,6 +3121,7 @@ def _interactive_change_workspace(
         return
     path = app.environments.set_workspace(current, workspace)
     print(f"Workspace activo: {path}")
+    _pause_after_result()
 
 
 def _interactive_change_data_profile(
@@ -3028,14 +3132,17 @@ def _interactive_change_data_profile(
     )
     if data_profile is None:
         return
+    _start_page("Inicio > Gestionar profile > Cambiar datos")
     path = app.environments.set_data_profile(current, data_profile)
     print(f"Datos activos del profile: {path}")
     _print_activation_notice(current)
+    _pause_after_result()
 
 
 def _interactive_create_environment(
     app: EapApplication, current: str
 ) -> str:
+    _start_page("Inicio > Gestionar profile > Crear")
     name = _read_input("Nombre del profile: ").strip()
     if _is_escape(name) or not name:
         return current
@@ -3045,6 +3152,7 @@ def _interactive_create_environment(
     data_profile = _interactive_choose_data_profile(app, name)
     if data_profile is None:
         return current
+    _start_page("Inicio > Gestionar profile > Crear")
     app.environments.create(
         name,
         workspace_id=workspace or name,
@@ -3055,12 +3163,14 @@ def _interactive_create_environment(
         f"Profile creado: {name} · workspace {desired['workspace']} · "
         f"datos {desired['dataProfile']}"
     )
+    _pause_after_result()
     return name
 
 
 def _interactive_duplicate_environment(
     app: EapApplication, current: str
 ) -> str:
+    _start_page("Inicio > Gestionar profile > Duplicar")
     name = _read_input(
         f"Nombre del nuevo profile basado en {current}: "
     ).strip()
@@ -3085,12 +3195,14 @@ def _interactive_duplicate_environment(
         return current
     app.duplicate_profile(current, name)
     print(f"Profile duplicado y seleccionado: {current} -> {name}")
+    _pause_after_result()
     return name
 
 
 def _interactive_delete_environment(
     app: EapApplication, current: str
 ) -> str:
+    _start_page("Inicio > Gestionar profile > Eliminar")
     environments = app.environments.list()
     if len(environments) <= 1:
         _print_panel(
@@ -3140,10 +3252,12 @@ def _interactive_delete_environment(
     selected = app.delete_profile(profile_id)
     print(f"Profile eliminado: {profile_id}")
     if profile_id != current:
+        _pause_after_result()
         return current
     if selected is None:
         raise ValidationError("No queda ningún profile seleccionable")
     print(f"Profile seleccionado: {selected}")
+    _pause_after_result()
     return selected
 
 
@@ -3159,8 +3273,9 @@ def _interactive_choose_data_profile(
     if profiles:
         choice_rows.append("[2] Reutilizar datos existentes")
     choice_rows.append("[Esc] Cancelar")
-    _print_panel("Datos del profile", [("Selección", choice_rows)])
     while True:
+        _start_page("Inicio > Gestionar profile > Seleccionar datos")
+        _print_panel("Datos del profile", [("Selección", choice_rows)])
         option = _read_input("> ").strip().lower()
         if _is_escape(option):
             return None
@@ -3180,9 +3295,9 @@ def _interactive_choose_data_profile(
                     print(
                         f"El perfil {selected} ya existe; puede reutilizarlo."
                     )
+                    _pause_after_result()
                     break
                 return selected
-            _print_panel("Datos del profile", [("Selección", choice_rows)])
             continue
         if option == "2" and profiles:
             usage = _data_profile_usage(app)
@@ -3196,6 +3311,9 @@ def _interactive_choose_data_profile(
                 )
                 rows.append(f"[{index}] {profile} · {detail}")
             rows.append("[Esc] Volver")
+            _start_page(
+                "Inicio > Gestionar profile > Seleccionar datos > Reutilizar"
+            )
             _print_panel(
                 "Datos del profile > Reutilizar",
                 [("Perfiles disponibles", rows)],
@@ -3203,9 +3321,9 @@ def _interactive_choose_data_profile(
             selected_index = _read_index(len(profiles))
             if selected_index is not None:
                 return profiles[selected_index]
-            _print_panel("Datos del profile", [("Selección", choice_rows)])
             continue
         print("Opción no válida.")
+        _pause_after_result()
 
 
 def _data_profile_usage(app: EapApplication) -> dict[str, list[str]]:
@@ -3220,6 +3338,7 @@ def _data_profile_usage(app: EapApplication) -> dict[str, list[str]]:
 def _interactive_export_environment(
     app: EapApplication, environment_id: str
 ) -> None:
+    _start_page("Inicio > Gestionar profile > Exportar")
     name = _read_input("Nombre del profile exportado: ").strip()
     if _is_escape(name) or not name:
         return
@@ -3241,9 +3360,11 @@ def _interactive_export_environment(
         + ("sí" if result.configuration_included else "no")
     )
     print(f"SHA256: {result.sha256}")
+    _pause_after_result()
 
 
 def _interactive_import_environment(app: EapApplication) -> str | None:
+    _start_page("Inicio > Gestionar profile > Importar")
     archives = _environment_import_packages(app)
     if not archives:
         _print_panel(
@@ -3295,6 +3416,7 @@ def _interactive_import_environment(app: EapApplication) -> str | None:
         )
     else:
         print(f"Paquete importado y eliminado: {archive}")
+    _pause_after_result()
     if result.components_missing:
         _interactive_restore_missing(app, result.environment_id)
     return result.environment_id
@@ -3328,6 +3450,7 @@ def _remove_imported_environment_package(
 
 
 def _interactive_export_tool(app: EapApplication) -> None:
+    _start_page("Inicio > Opciones avanzadas > Exportar EAP")
     default_name = f"eap-{app.version}"
     name = _read_input(f"Nombre del 7z [{default_name}]: ").strip()
     if _is_escape(name):
@@ -3341,12 +3464,14 @@ def _interactive_export_tool(app: EapApplication) -> None:
     )
     print(f"Distribución portable de EAP: {result.archive}")
     print(f"SHA256: {result.sha256}")
+    _pause_after_result()
 
 
 def _interactive_pocketools(
     app: EapApplication, environment_id: str
 ) -> None:
     while True:
+        _start_page("Inicio > Pocketools")
         installed = app.pocketools.installed()
         try:
             cached = app.available_pocketools(require_cache=True)
@@ -3403,16 +3528,19 @@ def _interactive_pocketools(
         if option == "5":
             values = app.refresh_pocketools()
             print(f"Índices actualizados: {len(values)} Pocketool(s).")
+            _pause_after_result()
             continue
         if option == "6":
             _interactive_pocketool_repositories(app)
             continue
         print("Opción no válida.")
+        _pause_after_result()
 
 
 def _interactive_install_pocketool(
     app: EapApplication, environment_id: str
 ) -> None:
+    _start_page("Inicio > Pocketools > Instalar")
     print("Consultando repositorios Pocketools...")
     definitions = sorted(
         app.available_pocketools(refresh=True),
@@ -3442,6 +3570,9 @@ def _interactive_install_pocketool(
     if selected_index is None:
         return
     definition = definitions[selected_index]
+    _start_page(
+        f"Inicio > Pocketools > Instalar > {definition.name}"
+    )
     _print_panel(
         f"Instalar {definition.name}",
         [
@@ -3470,15 +3601,18 @@ def _interactive_install_pocketool(
     for result in results:
         action = "Instalada" if result.changed else "Ya instalada"
         print(f"{action}: {result.selector} {result.version}")
+    _pause_after_result()
 
 
 def _interactive_update_pocketool(
     app: EapApplication, environment_id: str
 ) -> None:
+    _start_page("Inicio > Pocketools > Actualizar")
     print("Buscando actualizaciones Pocketools...")
     updates = app.pocketool_updates()
     if not updates:
         print("Todas las Pocketools están actualizadas.")
+        _pause_after_result()
         return
     rows = [
         f"[{index}] {item['name']} · {item['currentVersion']} -> "
@@ -3498,12 +3632,15 @@ def _interactive_update_pocketool(
     for result in results:
         if result.changed:
             print(f"Actualizada: {result.selector} {result.version}")
+    _pause_after_result()
 
 
 def _interactive_uninstall_pocketool(app: EapApplication) -> None:
+    _start_page("Inicio > Pocketools > Desinstalar")
     installed = app.pocketools.installed()
     if not installed:
         print("No hay Pocketools instaladas.")
+        _pause_after_result()
         return
     rows = [
         f"[{index}] {item['name']} · {item['version']} · "
@@ -3525,12 +3662,15 @@ def _interactive_uninstall_pocketool(app: EapApplication) -> None:
     print(f"Pocketool desinstalada: {selector}")
     if not result["payloadRemoved"]:
         print(f"Payload residual conservado: {result['residualPath']}")
+    _pause_after_result()
 
 
 def _interactive_pocketool_help(app: EapApplication) -> None:
+    _start_page("Inicio > Pocketools > Ayuda")
     installed = app.pocketools.installed()
     if not installed:
         print("No hay Pocketools instaladas.")
+        _pause_after_result()
         return
     rows = [
         f"[{index}] {item['name']} · {item['repository']}/{item['id']}"
@@ -3544,6 +3684,9 @@ def _interactive_pocketool_help(app: EapApplication) -> None:
     selected = installed[selected_index]
     value = app.pocketool_help(
         f"{selected['repository']}/{selected['id']}"
+    )
+    _start_page(
+        f"Inicio > Pocketools > Ayuda > {value['name']}"
     )
     help_value = value["help"]
     _print_panel(
@@ -3564,6 +3707,7 @@ def _interactive_pocketool_help(app: EapApplication) -> None:
 
 def _interactive_pocketool_repositories(app: EapApplication) -> None:
     while True:
+        _start_page("Inicio > Pocketools > Repositorios")
         sources = app.pocketools.sources()
         rows = [
             f"{source.id} · {source.repository_url}" for source in sources
@@ -3608,16 +3752,21 @@ def _interactive_pocketool_repositories(app: EapApplication) -> None:
             if _confirm("¿Confiar y añadir este repositorio?"):
                 app.add_pocketool_repository(source_id, url)
                 print(f"Repositorio añadido: {source_id}")
+                _pause_after_result()
             continue
         if option == "2":
             if not sources:
                 print("No hay repositorios que quitar.")
+                _pause_after_result()
                 continue
             choices = [
                 f"[{index}] {source.id} · {source.repository_url}"
                 for index, source in enumerate(sources, start=1)
             ]
             choices.append("[Esc] Volver")
+            _start_page(
+                "Inicio > Pocketools > Repositorios > Quitar"
+            )
             _print_panel("Quitar repositorio", [("Fuentes", choices)])
             selected_index = _read_index(len(sources))
             if selected_index is None:
@@ -3626,14 +3775,17 @@ def _interactive_pocketool_repositories(app: EapApplication) -> None:
             if _confirm(f"¿Quitar el repositorio {selected.id}?"):
                 app.remove_pocketool_repository(selected.id)
                 print(f"Repositorio eliminado: {selected.id}")
+                _pause_after_result()
             continue
         print("Opción no válida.")
+        _pause_after_result()
 
 
 def _interactive_advanced_options(
     app: EapApplication, current: str
 ) -> str | None:
     while True:
+        _start_page("Inicio > Opciones avanzadas")
         _print_panel(
             "Opciones avanzadas",
             [
@@ -3675,7 +3827,11 @@ def _interactive_advanced_options(
             profiles = app.environments.list()
             if not profiles:
                 print("No hay profiles para exportar.")
+                _pause_after_result()
                 continue
+            _start_page(
+                "Inicio > Opciones avanzadas > Exportar todos los profiles"
+            )
             _print_panel(
                 "Exportar todos los profiles",
                 [
@@ -3701,7 +3857,11 @@ def _interactive_advanced_options(
                 print(
                     f"No hay paquetes .7z en la bandeja {app.paths.envs}."
                 )
+                _pause_after_result()
                 continue
+            _start_page(
+                "Inicio > Opciones avanzadas > Importar todos los profiles"
+            )
             _print_panel(
                 "Importar todos los profiles",
                 [
@@ -3727,15 +3887,18 @@ def _interactive_advanced_options(
                 current = selected
             continue
         print("Opción no válida.")
+        _pause_after_result()
 
 
 def _interactive_host_integrations(
     app: EapApplication, environment_id: str
 ) -> None:
     while True:
+        _start_page("Inicio > Opciones avanzadas > Integraciones con el Host")
         statuses = app.host_integration_statuses(environment_id)
         if not statuses:
             print("No hay integraciones con el host definidas.")
+            _pause_after_result()
             return
         data_profile = statuses[0].data_profile
         profiles = app.host_integrations.profiles_using_data(data_profile)
@@ -3768,9 +3931,11 @@ def _interactive_host_integrations(
             index = int(option) - 1
         except ValueError:
             print("Opción no válida.")
+            _pause_after_result()
             continue
         if not 0 <= index < len(statuses):
             print("Opción no válida.")
+            _pause_after_result()
             continue
         _interactive_host_integration(
             app, environment_id, statuses[index]
@@ -3783,6 +3948,10 @@ def _interactive_host_integration(
     status: Any,
 ) -> None:
     action = "Desactivar" if status.ok else "Activar"
+    _start_page(
+        "Inicio > Opciones avanzadas > Integraciones con el Host > "
+        f"{status.display_name}"
+    )
     link_rows: list[str] = []
     for link in status.links:
         link_rows.extend(
@@ -3810,6 +3979,7 @@ def _interactive_host_integration(
         return
     if option != "1":
         print("Opción no válida.")
+        _pause_after_result()
         return
     try:
         if status.ok:
@@ -3823,6 +3993,7 @@ def _interactive_host_integration(
                 "Integración desactivada. Se retiró el junction; "
                 "los datos del host no se han eliminado."
             )
+            _pause_after_result()
             return
 
         delete_existing = status.state == "inactive-with-data"
@@ -3860,6 +4031,7 @@ def _interactive_host_integration(
                 f"{result.deleted_files} archivo(s)."
             )
             print("El contenido eliminado no es recuperable desde EAP.")
+        _pause_after_result()
     except EapError as exc:
         _print_error(str(exc), pause=True)
 
@@ -3895,8 +4067,7 @@ def _print_batch_export_summary(
         f"Exportación masiva terminada: {len(exported)} correctos · "
         f"{len(failures)} errores."
     )
-    if failures:
-        _pause_after_error()
+    _pause_after_result()
 
 
 def _import_all_profiles(
@@ -3948,11 +4119,11 @@ def _print_batch_import_summary(
         f"Importación masiva terminada: {len(imported)} importados · "
         f"{len(failures)} errores."
     )
-    if failures:
-        _pause_after_error()
+    _pause_after_result()
 
 
 def _interactive_doctor(app: EapApplication) -> None:
+    _start_page("Inicio > Opciones avanzadas > Diagnóstico")
     checks = app.doctor()
     _print_panel(
         "Diagnóstico",
@@ -3972,6 +4143,7 @@ def _interactive_doctor(app: EapApplication) -> None:
 
 
 def _interactive_clean_temporary_storage(app: EapApplication) -> None:
+    _start_page("Inicio > Opciones avanzadas > Limpiar temporales")
     usage = app.temporary_storage_usage()
     _print_panel(
         "Limpiar temporales",
@@ -3994,16 +4166,20 @@ def _interactive_clean_temporary_storage(app: EapApplication) -> None:
         f"Temporales eliminados: {_format_bytes(result.bytes_removed)} · "
         f"{result.files_removed} archivo(s)."
     )
+    _pause_after_result()
 
 
 def _interactive_update_eap(app: EapApplication) -> bool:
+    _start_page("Inicio > Opciones avanzadas > Actualizar EAP")
     print("Comprobando la última release pública de EAP...")
     update = app.check_eap_update()
     if update.latest_version is None:
         print("Todavía no hay releases públicas de EAP.")
+        _pause_after_result()
         return False
     if not update.update_available:
         print(f"EAP ya está actualizado: {update.current_version}")
+        _pause_after_result()
         return False
     release = update.release
     _print_panel(
@@ -4026,6 +4202,7 @@ def _interactive_update_eap(app: EapApplication) -> bool:
     result = app.install_eap_update(update)
     print(f"EAP actualizado a {result.version}.")
     print("Cierre y vuelva a abrir EAP para aplicar el nuevo código.")
+    _pause_after_result()
     return True
 
 
@@ -4067,6 +4244,7 @@ def _interactive_restore_missing(
     missing = _missing_components(app, environment_id)
     if not missing:
         return
+    _start_page(f"Inicio > Restaurar profile > {environment_id}")
     restorable = [
         item for item in missing if item.get("restorable", True)
     ]
@@ -4094,6 +4272,7 @@ def _interactive_restore_missing(
     restored = app.restore_missing_components(environment_id)
     print(f"Components restaurados: {len(restored)}")
     _print_activation_notice(environment_id)
+    _pause_after_result()
 
 
 def _print_activation_notice(environment_id: str) -> None:
@@ -4133,6 +4312,7 @@ def _read_index(length: int) -> int | None:
         if raw.isdigit() and 1 <= int(raw) <= length:
             return int(raw) - 1
         print("Selección no válida.")
+        _pause_after_result()
 
 
 def _require_environment(
