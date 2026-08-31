@@ -96,7 +96,16 @@ class ComponentDefinition:
     def important_paths(self) -> list[dict[str, str]]:
         info = self.value.get("info")
         if isinstance(info, dict) and isinstance(info.get("paths"), list):
-            return list(info["paths"])
+            result: list[dict[str, str]] = []
+            for entry in info["paths"]:
+                normalized = dict(entry)
+                if normalized.get("type") not in {"directory", "file"}:
+                    normalized["type"] = self._legacy_important_path_type(
+                        str(normalized.get("base", "")),
+                        str(normalized.get("relativePath", "")),
+                    )
+                result.append(normalized)
+            return result
         result: list[dict[str, str]] = []
         seen: set[tuple[str, str]] = set()
         data = self.value.get("data", {})
@@ -123,6 +132,11 @@ class ComponentDefinition:
                             "displayName": display_name,
                             "base": mapped[0],
                             "relativePath": mapped[1],
+                            "type": (
+                                "directory"
+                                if collection == "directories"
+                                else "file"
+                            ),
                         }
                     )
         return result or [
@@ -130,8 +144,33 @@ class ComponentDefinition:
                 "displayName": "Home del profile",
                 "base": "profile",
                 "relativePath": "home",
+                "type": "directory",
             }
         ]
+
+    def _legacy_important_path_type(
+        self, base: str, relative_path: str
+    ) -> str:
+        data = self.value.get("data", {})
+        if not isinstance(data, dict):
+            return "directory"
+        for collection, path_type in (
+            ("directories", "directory"),
+            ("files", "file"),
+        ):
+            entries = data.get(collection, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                raw_path = entry.get("path")
+                if not isinstance(raw_path, str):
+                    continue
+                mapped = self._legacy_important_path(raw_path)
+                if mapped == (base, relative_path):
+                    return path_type
+        return "directory"
 
     def _legacy_important_path(
         self, template: str
@@ -273,7 +312,7 @@ class Catalog:
             ),
             str(path),
         )
-        if value["schemaVersion"] not in {1, 2}:
+        if value["schemaVersion"] not in {1, 2, 3}:
             raise ValidationError(f"Schema de componente no soportado en {path}")
         if value["id"] != expected_id:
             raise ValidationError(
@@ -289,11 +328,16 @@ class Catalog:
             raise ValidationError(
                 f"Tipo de componente no soportado en {path}: {value['kind']!r}"
             )
-        if value["schemaVersion"] == 2:
+        if value["schemaVersion"] in {2, 3}:
             require_fields(value, ("info",), str(path))
         info = value.get("info")
         if info is not None:
-            Catalog._validate_component_info(info, expected_id, path)
+            Catalog._validate_component_info(
+                info,
+                expected_id,
+                path,
+                require_path_type=value["schemaVersion"] == 3,
+            )
         if not isinstance(value["launchers"], list):
             raise ValidationError(f"launchers debe ser una lista en {path}")
         launcher_ids: set[str] = set()
@@ -689,7 +733,10 @@ class Catalog:
 
     @staticmethod
     def _validate_component_info(
-        info: Any, expected_id: str, path: Path
+        info: Any,
+        expected_id: str,
+        path: Path,
+        require_path_type: bool = False,
     ) -> None:
         if not isinstance(info, dict):
             raise ValidationError(f"info debe ser un objeto en {path}")
@@ -721,14 +768,18 @@ class Catalog:
                 raise ValidationError(
                     f"Ruta no válida en info.paths de {path}"
                 )
+            required_fields = ["displayName", "base", "relativePath"]
+            if require_path_type:
+                required_fields.append("type")
             require_fields(
                 important_path,
-                ("displayName", "base", "relativePath"),
+                tuple(required_fields),
                 f"info.paths de {expected_id}",
             )
             display_name = important_path["displayName"]
             base = important_path["base"]
             relative_path = important_path["relativePath"]
+            path_type = important_path.get("type")
             if (
                 not isinstance(display_name, str)
                 or not display_name.strip()
@@ -737,6 +788,7 @@ class Catalog:
                 or not isinstance(relative_path, str)
                 or not relative_path
                 or "\\" in relative_path
+                or path_type not in {None, "directory", "file"}
             ):
                 raise ValidationError(
                     f"Ruta no válida en info.paths de {path}"

@@ -809,6 +809,43 @@ class ComponentInfoTests(unittest.TestCase):
                 component.important_paths[0]["relativePath"],
             )
 
+    def test_schema_three_requires_the_path_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dbeaver.json"
+            value = dbeaver_component(path).value
+            value["schemaVersion"] = 3
+
+            with self.assertRaisesRegex(
+                ValidationError, "Faltan campos.*type"
+            ):
+                Catalog._validate_component(value, "dbeaver", path)
+
+            for item in value["info"]["paths"]:
+                item["type"] = "directory"
+            Catalog._validate_component(value, "dbeaver", path)
+
+    def test_legacy_info_path_type_is_inferred_from_component_data(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = nodejs_component(Path(temporary) / "nodejs.json")
+            component.value["data"]["files"].append(
+                {
+                    "path": "{{profile.home}}/.npmrc",
+                    "displayName": "Configuración npm",
+                    "role": "configuration",
+                    "mode": "if-missing",
+                    "content": "",
+                }
+            )
+            paths = {
+                item["relativePath"]: item["type"]
+                for item in component.important_paths
+            }
+
+            self.assertEqual("directory", paths["home/.npm"])
+            self.assertEqual("file", paths["home/.npmrc"])
+
     def test_component_info_rejects_path_escape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "dbeaver.json"
@@ -5214,6 +5251,69 @@ class InterfaceTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("No se descargará ningún archivo", rendered)
         self.assertIn("activado en default desde el payload local", rendered)
+
+    def test_component_info_paths_open_explorer_and_notepad(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            environments = EnvironmentStore(paths)
+            environments.create("default")
+            component = SimpleNamespace(
+                display_name="Node.js",
+                information_description="Datos importantes de Node.js.",
+                important_paths=[
+                    {
+                        "displayName": "Caché npm",
+                        "base": "profile",
+                        "relativePath": "home/.npm",
+                        "type": "directory",
+                    },
+                    {
+                        "displayName": "Configuración npm (.npmrc)",
+                        "base": "profile",
+                        "relativePath": "home/.npmrc",
+                        "type": "file",
+                    },
+                ],
+            )
+            windows = paths.temp / "Windows"
+            explorer = windows / "explorer.exe"
+            notepad = windows / "System32" / "notepad.exe"
+            explorer.parent.mkdir(parents=True, exist_ok=True)
+            notepad.parent.mkdir(parents=True, exist_ok=True)
+            explorer.touch()
+            notepad.touch()
+            app = SimpleNamespace(paths=paths, environments=environments)
+            output = StringIO()
+            with (
+                patch.dict(os.environ, {"SystemRoot": str(windows)}),
+                patch.object(
+                    cli_module, "_read_input", side_effect=["1", "2", "\x1b"]
+                ),
+                patch.object(cli_module.subprocess, "Popen") as popen,
+                redirect_stdout(output),
+            ):
+                cli_module._interactive_component_information(
+                    app, "default", component
+                )
+
+            profile = paths.data / "profiles" / "default"
+            self.assertEqual(
+                [
+                    [str(explorer), str(profile / "home" / ".npm")],
+                    [str(notepad), str(profile / "home" / ".npmrc")],
+                ],
+                [call.args[0] for call in popen.call_args_list],
+            )
+            self.assertTrue((profile / "home" / ".npm").is_dir())
+            self.assertTrue((profile / "home").is_dir())
+            rendered = output.getvalue()
+            self.assertIn("[1] Caché npm · Carpeta:", rendered)
+            self.assertIn(
+                "[2] Configuración npm (.npmrc) · Archivo:", rendered
+            )
+            self.assertIn("Carpeta abierta:", rendered)
+            self.assertIn("Archivo abierto:", rendered)
 
     def test_component_table_includes_repository_and_inactive_payloads(
         self,

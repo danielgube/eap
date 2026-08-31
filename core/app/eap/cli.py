@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import textwrap
 from pathlib import Path, PurePosixPath
@@ -2984,7 +2985,33 @@ def _component_information_sections(
     app: EapApplication,
     environment_id: str,
     component: Any,
+    numbered_paths: bool = False,
 ) -> list[tuple[str, list[str]]]:
+    resolved_paths = _component_information_paths(
+        app, environment_id, component
+    )
+    path_rows = []
+    for index, (item, target, path_type) in enumerate(
+        resolved_paths, start=1
+    ):
+        if numbered_paths:
+            type_label = "Carpeta" if path_type == "directory" else "Archivo"
+            path_rows.append(
+                f"[{index}] {item['displayName']} · {type_label}: {target}"
+            )
+        else:
+            path_rows.append(f"{item['displayName']}: {target}")
+    return [
+        ("Descripción", [component.information_description]),
+        ("Rutas importantes", path_rows),
+    ]
+
+
+def _component_information_paths(
+    app: EapApplication,
+    environment_id: str,
+    component: Any,
+) -> list[tuple[dict[str, str], Path, str]]:
     desired = app.environments.read_desired(environment_id)
     roots = {
         "profile": (
@@ -2994,7 +3021,7 @@ def _component_information_sections(
             app.paths.workspaces / str(desired["workspace"])
         ),
     }
-    path_rows: list[str] = []
+    result: list[tuple[dict[str, str], Path, str]] = []
     for item in component.important_paths:
         root = roots[str(item["base"])].resolve()
         relative = PurePosixPath(str(item["relativePath"]))
@@ -3006,11 +3033,13 @@ def _component_information_sections(
                 f"La ruta informativa sale de {item['base']}: "
                 f"{item['relativePath']}"
             ) from exc
-        path_rows.append(f"{item['displayName']}: {target}")
-    return [
-        ("Descripción", [component.information_description]),
-        ("Rutas importantes", path_rows),
-    ]
+        path_type = str(item.get("type", "directory"))
+        if path_type not in {"directory", "file"}:
+            raise ValidationError(
+                f"Tipo de ruta informativa no válido: {path_type}"
+            )
+        result.append((item, target, path_type))
+    return result
 
 
 def _interactive_component_information(
@@ -3018,17 +3047,72 @@ def _interactive_component_information(
     environment_id: str,
     component: Any,
 ) -> None:
-    _start_page(f"Inicio > Información > {component.display_name}")
-    _print_panel(
-        f"Información > {component.display_name}",
-        [
-            *_component_information_sections(
-                app, environment_id, component
-            ),
-            ("", ["[Esc] Volver"]),
-        ],
-    )
-    _read_input("> ")
+    while True:
+        paths = _component_information_paths(
+            app, environment_id, component
+        )
+        _start_page(f"Inicio > Información > {component.display_name}")
+        _print_panel(
+            f"Información > {component.display_name}",
+            [
+                *_component_information_sections(
+                    app,
+                    environment_id,
+                    component,
+                    numbered_paths=True,
+                ),
+                ("", ["[Esc] Volver"]),
+            ],
+        )
+        option = _read_input("> ").strip().lower()
+        if _is_escape(option) or option in {"v", "volver", "q"}:
+            return
+        if not option.isdigit() or not 1 <= int(option) <= len(paths):
+            print("Opción no válida.")
+            _pause_after_result()
+            continue
+        item, target, path_type = paths[int(option) - 1]
+        _open_component_information_path(
+            str(item["displayName"]), target, path_type
+        )
+
+
+def _open_component_information_path(
+    display_name: str, target: Path, path_type: str
+) -> None:
+    windows_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    if path_type == "directory":
+        if target.exists() and not target.is_dir():
+            raise ValidationError(
+                f"La ruta declarada como carpeta es un archivo: {target}"
+            )
+        target.mkdir(parents=True, exist_ok=True)
+        executable = windows_root / "explorer.exe"
+        opened_message = "Carpeta abierta"
+    elif path_type == "file":
+        if target.exists() and not target.is_file():
+            raise ValidationError(
+                f"La ruta declarada como archivo es una carpeta: {target}"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        executable = windows_root / "System32" / "notepad.exe"
+        opened_message = "Archivo abierto"
+    else:
+        raise ValidationError(
+            f"Tipo de ruta informativa no válido: {path_type}"
+        )
+    if not executable.is_file():
+        raise ValidationError(
+            f"No se encuentra la aplicación de Windows: {executable}"
+        )
+    try:
+        subprocess.Popen([str(executable), str(target)])
+    except OSError as exc:
+        raise ValidationError(
+            f"No se pudo abrir {display_name}: {exc}"
+        ) from exc
+    print(f"{opened_message}: {target}")
+    _pause_after_result()
 
 
 def _track_display(component: Any, track_id: int | str) -> str:
