@@ -6,6 +6,16 @@
   "description": "Cliente de APIs local-first y compatible con Git",
   "category": "applications",
   "kind": "application",
+  "info": {
+    "description": "Cliente de APIs local-first y compatible con Git.",
+    "paths": [
+      {
+        "displayName": "Configuración Bruno",
+        "base": "profile",
+        "relativePath": "components/bruno/user-data"
+      }
+    ]
+  },
   "launchers": [
     {
       "id": "bruno",

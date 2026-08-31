@@ -109,12 +109,42 @@ class TtyStringIO(StringIO):
         return True
 
 
+def component_info(
+    component_id: str,
+    description: str,
+    *paths: tuple[str, str, str],
+) -> dict[str, Any]:
+    return {
+        "description": description,
+        "paths": [
+            {
+                "displayName": display_name,
+                "base": base,
+                "relativePath": relative_path,
+            }
+            for display_name, base, relative_path in paths
+        ]
+        or [
+            {
+                "displayName": "Datos del componente",
+                "base": "profile",
+                "relativePath": f"components/{component_id}",
+            }
+        ],
+    }
+
+
 def java_component(manifest_path: Path) -> ComponentDefinition:
     value = {
         "schemaVersion": 1,
         "id": "java",
         "displayName": "Java JDK",
         "kind": "runtime",
+        "info": component_info(
+            "java",
+            "Distribuciones OpenJDK portables para Windows.",
+            ("Home del usuario Java", "profile", "home"),
+        ),
         "launchers": [],
         "capability": {"id": "runtime.java", "exclusive": True},
         "tracks": [
@@ -174,6 +204,11 @@ def maven_component(manifest_path: Path) -> ComponentDefinition:
         "id": "maven",
         "displayName": "Apache Maven",
         "kind": "tool",
+        "info": component_info(
+            "maven",
+            "Herramienta de construcción para Java.",
+            ("Configuración Maven", "profile", "home/.m2/settings.xml"),
+        ),
         "launchers": [],
         "capability": {"id": "tool.maven", "exclusive": True},
         "requires": [
@@ -251,6 +286,11 @@ def git_component(manifest_path: Path) -> ComponentDefinition:
         "id": "git",
         "displayName": "Git",
         "kind": "tool",
+        "info": component_info(
+            "git",
+            "Git for Windows portable.",
+            ("Configuración Git", "profile", "home/.gitconfig"),
+        ),
         "launchers": [],
         "capability": {"id": "tool.git", "exclusive": True},
         "tracks": [{"id": 2, "displayName": "Git 2 estable"}],
@@ -318,6 +358,12 @@ def nodejs_component(manifest_path: Path) -> ComponentDefinition:
         "id": "nodejs",
         "displayName": "Node.js",
         "kind": "runtime",
+        "info": component_info(
+            "nodejs",
+            "Runtime JavaScript y herramientas npm.",
+            ("Caché npm", "profile", "home/.npm"),
+            ("Configuración npm (.npmrc)", "profile", "home/.npmrc"),
+        ),
         "launchers": [],
         "capability": {"id": "runtime.nodejs", "exclusive": True},
         "tracks": [
@@ -385,6 +431,11 @@ def python_component(manifest_path: Path) -> ComponentDefinition:
         "id": "python",
         "displayName": "Python",
         "kind": "runtime",
+        "info": component_info(
+            "python",
+            "Runtime CPython con pip y venv.",
+            ("Caché pip", "profile", "home/.cache/pip"),
+        ),
         "launchers": [],
         "capability": {"id": "runtime.python", "exclusive": True},
         "tracks": [
@@ -467,6 +518,10 @@ def dbeaver_component(manifest_path: Path) -> ComponentDefinition:
         "id": "dbeaver",
         "displayName": "DBeaver Community",
         "kind": "application",
+        "info": component_info(
+            "dbeaver",
+            "Cliente universal de bases de datos.",
+        ),
         "launchers": [
             {
                 "id": "dbeaver",
@@ -570,6 +625,10 @@ def vscode_component(manifest_path: Path) -> ComponentDefinition:
         "id": "vscode",
         "displayName": "Visual Studio Code",
         "kind": "application",
+        "info": component_info(
+            "vscode",
+            "Editor de Microsoft ligado al workspace.",
+        ),
         "launchers": [
             {
                 "id": "vscode",
@@ -680,6 +739,11 @@ def external_component(manifest_path: Path) -> ComponentDefinition:
         "id": "kiro",
         "displayName": "Kiro",
         "kind": "external",
+        "info": component_info(
+            "kiro",
+            "Instalación externa ligada al workspace.",
+            ("Workspace activo", "workspace", "."),
+        ),
         "launchers": [
             {
                 "id": "kiro",
@@ -717,6 +781,83 @@ def external_component(manifest_path: Path) -> ComponentDefinition:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(value), encoding="utf-8")
     return ComponentDefinition(manifest_path, value)
+
+
+class ComponentInfoTests(unittest.TestCase):
+    def test_component_info_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dbeaver.json"
+            value = dbeaver_component(path).value
+            value["schemaVersion"] = 2
+            del value["info"]
+
+            with self.assertRaisesRegex(
+                ValidationError, "Faltan campos.*info"
+            ):
+                Catalog._validate_component(value, "dbeaver", path)
+
+    def test_schema_one_component_remains_compatible_without_info(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dbeaver.json"
+            component = dbeaver_component(path)
+            del component.value["info"]
+
+            Catalog._validate_component(component.value, "dbeaver", path)
+
+            self.assertEqual(
+                "components/dbeaver",
+                component.important_paths[0]["relativePath"],
+            )
+
+    def test_component_info_rejects_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dbeaver.json"
+            value = dbeaver_component(path).value
+            value["info"]["paths"][0]["relativePath"] = "../secreto"
+
+            with self.assertRaisesRegex(
+                ValidationError, "rutas relativas seguras"
+            ):
+                Catalog._validate_component(value, "dbeaver", path)
+
+    def test_component_info_resolves_profile_and_workspace_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            environments = EnvironmentStore(paths)
+            environments.create(
+                "default",
+                workspace_id="proyecto",
+                data_profile_id="desarrollo",
+            )
+            component = dbeaver_component(paths.temp / "dbeaver.json")
+            component.value["info"]["paths"].append(
+                {
+                    "displayName": "Workspace activo",
+                    "base": "workspace",
+                    "relativePath": ".",
+                }
+            )
+            app = SimpleNamespace(paths=paths, environments=environments)
+
+            sections = cli_module._component_information_sections(
+                app, "default", component
+            )
+            rendered = "\n".join(
+                row for _, rows in sections for row in rows
+            )
+
+            self.assertIn(
+                str(
+                    paths.data
+                    / "profiles"
+                    / "desarrollo"
+                    / "components"
+                    / "dbeaver"
+                ),
+                rendered,
+            )
+            self.assertIn(str(paths.workspaces / "proyecto"), rendered)
 
 
 class VersionTests(unittest.TestCase):
@@ -4965,14 +5106,10 @@ class InterfaceTests(unittest.TestCase):
             all(len(line) == 60 for line in visible.splitlines() if line)
         )
 
-    def test_color_does_not_change_nested_card_layout(self) -> None:
-        cards = [
-            [
-                "[1] Java JDK · 21",
-                "Proveedor: Eclipse Temurin",
-                "Estado: OK",
-            ],
-            ["[2] Node.js · 24", "Proveedor: Node.js Foundation"],
+    def test_color_does_not_change_component_table_layout(self) -> None:
+        components = [
+            ["[1]", "Java JDK · 21", "Eclipse Temurin", "25", "[1i]"],
+            ["[2]", "Node.js · 24", "Node.js Foundation", "", "[2i]"],
         ]
 
         def render(color_enabled: bool) -> str:
@@ -4988,8 +5125,8 @@ class InterfaceTests(unittest.TestCase):
                 ),
                 redirect_stdout(output),
             ):
-                rows = cli_module._layout_component_cards(cards)
-                cli_module._print_panel("Runtimes (2)", [("", rows)])
+                rows = cli_module._component_table_rows(components)
+                cli_module._print_panel("Componentes (2)", [("", rows)])
             return output.getvalue()
 
         plain = render(False)
@@ -4999,8 +5136,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertNotIn("…", visible)
         self.assertIn("Java JDK · 21", visible)
         self.assertIn("Node.js · 24", visible)
-        self.assertIn("\x1b[33m[1]\x1b[36m", colored)
-        self.assertIn("\x1b[33m[2]\x1b[36m", colored)
+        self.assertIn("\x1b[33m[1]\x1b[0m", colored)
+        self.assertIn("\x1b[33m[1i]\x1b[0m", colored)
 
     def test_panel_color_is_suppressed_when_output_is_redirected(self) -> None:
         output = StringIO()
@@ -5698,7 +5835,11 @@ class InterfaceTests(unittest.TestCase):
 
     def test_component_flow_shows_breadcrumb_and_active_java(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            component = java_component(Path(temporary) / "java.json")
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            environments = EnvironmentStore(paths)
+            environments.create("default")
+            component = java_component(paths.temp / "java.json")
             inventory = [
                 {
                     "id": "java",
@@ -5708,7 +5849,9 @@ class InterfaceTests(unittest.TestCase):
                 }
             ]
             app = SimpleNamespace(
-                inventory=lambda environment_id: inventory
+                paths=paths,
+                environments=environments,
+                inventory=lambda environment_id: inventory,
             )
             output = StringIO()
             with (
@@ -5716,6 +5859,11 @@ class InterfaceTests(unittest.TestCase):
                     cli_module,
                     "_read_input",
                     side_effect=["1", "\x1b", "\x1b"],
+                ),
+                patch.object(
+                    cli_module.shutil,
+                    "get_terminal_size",
+                    return_value=os.terminal_size((180, 24)),
                 ),
                 redirect_stdout(output),
             ):
@@ -5737,11 +5885,22 @@ class InterfaceTests(unittest.TestCase):
                 "Java 21 LTS · activo · 21.0.12+8",
                 rendered,
             )
+            self.assertIn("Descripción", rendered)
+            self.assertIn("Rutas importantes", rendered)
+            self.assertIn(
+                "Home del usuario Java: "
+                + str(paths.data / "profiles" / "default" / "home"),
+                rendered,
+            )
         self.assertIn("Bootstrap · incluida con EAP", rendered)
 
     def test_component_flow_shows_repository_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            bundled = java_component(Path(temporary) / "java.json")
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            environments = EnvironmentStore(paths)
+            environments.create("default")
+            bundled = java_component(paths.temp / "java.json")
             component = ComponentDefinition(
                 bundled.manifest_path,
                 bundled.value,
@@ -5754,7 +5913,11 @@ class InterfaceTests(unittest.TestCase):
                 ),
                 "components/java.json",
             )
-            app = SimpleNamespace(inventory=lambda environment_id: [])
+            app = SimpleNamespace(
+                paths=paths,
+                environments=environments,
+                inventory=lambda environment_id: [],
+            )
             output = StringIO()
             with (
                 patch.object(
@@ -5960,7 +6123,13 @@ class InterfaceTests(unittest.TestCase):
             "error": None,
         }
         selected = {"id": "java"}
-        app = SimpleNamespace(inventory=lambda environment_id: [selected])
+        component = SimpleNamespace(id="java")
+        app = SimpleNamespace(
+            inventory=lambda environment_id: [selected],
+            catalog=SimpleNamespace(
+                component=lambda component_id: component
+            ),
+        )
         with (
             patch.object(
                 cli_module,
@@ -5977,7 +6146,17 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module,
                 "_read_input",
-                side_effect=["w", "d", "t", "c", "p", "1", "m", "\x1b"],
+                side_effect=[
+                    "w",
+                    "d",
+                    "t",
+                    "c",
+                    "p",
+                    "1i",
+                    "1",
+                    "m",
+                    "\x1b",
+                ],
             ),
             patch.object(
                 cli_module, "_interactive_change_workspace"
@@ -6006,6 +6185,10 @@ class InterfaceTests(unittest.TestCase):
             ) as component_actions,
             patch.object(
                 cli_module,
+                "_interactive_component_information",
+            ) as component_information,
+            patch.object(
+                cli_module,
                 "_interactive_manage_environments",
                 return_value="default",
             ) as manage,
@@ -6021,6 +6204,9 @@ class InterfaceTests(unittest.TestCase):
         pocketools.assert_called_once_with(app, "default")
         component_actions.assert_called_once_with(
             app, "default", selected, status
+        )
+        component_information.assert_called_once_with(
+            app, "default", component
         )
         manage.assert_called_once_with(app, "default")
 
@@ -6320,7 +6506,9 @@ class InterfaceTests(unittest.TestCase):
             )
             status = {
                 "state": "done",
-                "updates": [{"family": "java"}],
+                "updates": [
+                    {"family": "java", "latestVersion": "21.0.13+9"}
+                ],
                 "resolved": [],
                 "error": None,
             }
@@ -6336,30 +6524,19 @@ class InterfaceTests(unittest.TestCase):
                 _render_main_dashboard(app, "default", status)
             rendered = output.getvalue()
             self.assertIn("┌─ EAP 0.2.0", rendered)
-            self.assertIn("┌─ Runtimes (2)", rendered)
-            self.assertIn("┌─ Herramientas (1)", rendered)
-            self.assertIn("│ ┌─ [1] Java JDK *", rendered)
-            self.assertTrue(
-                any(
-                    "Java JDK *" in line and "Node.js" in line
-                    for line in rendered.splitlines()
-                )
-            )
-            self.assertIn("Java JDK *", rendered)
+            self.assertIn("┌─ Componentes (3)", rendered)
+            self.assertIn("ID", rendered)
+            self.assertIn("Nombre", rendered)
+            self.assertIn("Proveedor", rendered)
+            self.assertIn("Update", rendered)
+            self.assertIn("Info", rendered)
+            self.assertIn("[1]", rendered)
+            self.assertIn("[1i]", rendered)
+            self.assertIn("Java JDK · 21.0.12+8", rendered)
+            self.assertIn("21.0.13+9", rendered)
             self.assertNotIn("Arrancable:", rendered)
-            self.assertIn("Actualización: disponible", rendered)
+            self.assertNotIn("Actualización:", rendered)
             self.assertNotIn("Tipo:", rendered)
-            self.assertIn(
-                "Configuración Maven: "
-                + str(
-                    paths.data
-                    / "profiles"
-                    / "default"
-                    / "home"
-                    / ".m2"
-                ),
-                rendered,
-            )
             self.assertIn("[M] Gestionar profile", rendered)
             self.assertNotIn("[3] Diagnóstico", rendered)
             self.assertNotIn("[4] Limpiar temporales", rendered)

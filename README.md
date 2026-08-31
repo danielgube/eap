@@ -283,7 +283,18 @@ La pantalla principal muestra el tamaño y número de archivos de `temp`, seguid
 del número de fuentes configuradas para componentes y Pocketools. Sus accesos
 contextuales permiten cambiar workspace (`[W]`) o datos (`[D]`) y limpiar
 temporales (`[T]`). Los componentes instalados se numeran en el mismo orden
-visual para abrir directamente sus acciones. La acción
+visual dentro de una tabla con columnas `ID`, `Nombre`, `Proveedor`, `Update` e
+`Info`. El acceso numérico (`[1]`, `[2]`, etc.) abre las acciones del componente
+y su variante informativa (`[1i]`, `[2i]`, etc.) muestra la
+descripción y las rutas importantes resueltas de forma absoluta para el profile
+activo. `Update` queda vacía cuando no hay una actualización disponible y, si la
+hay, contiene únicamente su versión. La misma información se presenta antes de
+elegir proveedor y línea al instalar un componente.
+
+Cada manifiesto `components/*.json` debe declarar `info.description` e
+`info.paths`. Las rutas se expresan mediante `base` (`profile` o `workspace`) y
+un `relativePath` seguro; EAP rechaza rutas absolutas, separadores `\\` y escapes
+con `..`. La acción
 `Opciones avanzadas > [4] Limpiar temporales` y `tool clean-temp` eliminan
 descargas, staging,
 transacciones y logs, pero se niegan a ejecutarse mientras hay otra operación EAP

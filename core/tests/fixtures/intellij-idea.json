@@ -6,6 +6,16 @@
   "description": "IDE unificado de JetBrains: uso gratuito o funciones Ultimate con licencia",
   "category": "applications",
   "kind": "application",
+  "info": {
+    "description": "IDE unificado de JetBrains con datos privados en el profile.",
+    "paths": [
+      {
+        "displayName": "Configuración IntelliJ IDEA",
+        "base": "profile",
+        "relativePath": "components/intellij-idea/config"
+      }
+    ]
+  },
   "launchers": [
     {
       "id": "intellij-idea",

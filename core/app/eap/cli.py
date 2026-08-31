@@ -7,7 +7,7 @@ import re
 import shutil
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -1415,6 +1415,19 @@ def interactive(
                     update_status = _initial_update_status(
                         app, environment_id
                     )
+                elif info_match := re.fullmatch(r"(\d+)i", option):
+                    ordered_inventory = _ordered_inventory(
+                        app, app.inventory(environment_id)
+                    )
+                    selected_index = int(info_match.group(1)) - 1
+                    if not 0 <= selected_index < len(ordered_inventory):
+                        print("Opción no válida.")
+                        continue
+                    selected = ordered_inventory[selected_index]
+                    component = app.catalog.component(str(selected["id"]))
+                    _interactive_component_information(
+                        app, environment_id, component
+                    )
                 elif option.isdigit():
                     ordered_inventory = _ordered_inventory(
                         app, app.inventory(environment_id)
@@ -1538,23 +1551,27 @@ def _render_main_dashboard(
         status_rows.append(
             "! No se pudo consultar la red; se muestran datos guardados"
         )
-    elif update_status["updates"]:
-        status_rows.append("* = actualización disponible")
     elif (
-        update_status.get("state") == "done"
+        not update_status["updates"]
+        and update_status.get("state") == "done"
         and inventory
         and not missing_ids
     ):
         status_rows.append("✓ Componentes al día en la última comprobación")
     elif (
-        update_status.get("checked")
+        not update_status["updates"]
+        and update_status.get("checked")
         and inventory
         and not missing_ids
     ):
         status_rows.append(
             "✓ Sin actualizaciones en la última comprobación guardada"
         )
-    elif inventory and not missing_ids:
+    elif (
+        not update_status["updates"]
+        and inventory
+        and not missing_ids
+    ):
         status_rows.append("? Actualizaciones pendientes de comprobar")
     if missing_ids:
         status_rows.append(
@@ -1623,153 +1640,80 @@ def _inventory_sections(
 ) -> list[tuple[str, list[str]]]:
     if not inventory:
         return [("Componentes", ["(sin componentes instalados)"])]
-    update_ids = {
-        str(item.get("family"))
-        for item in update_status.get("updates", [])
-        if isinstance(item, dict)
-    }
     missing_ids = missing_ids or set()
     ordered_inventory = _ordered_inventory(app, inventory)
-    groups: dict[str, list[list[str]]] = {}
-    group_counts: dict[str, int] = {}
+    table_rows: list[list[str]] = []
     for index, item in enumerate(ordered_inventory, start=1):
         component = app.catalog.component(str(item["id"]))
         provider = component.provider(str(item["provider"]))
-        marker = " *" if component.id in update_ids else ""
-        if component.id in missing_ids:
-            marker += " !"
-        prefix = f"[{index}] " if numbered else ""
-        update_label = _component_update_label(
-            component.id,
-            update_status,
-            update_ids,
-            component.id in missing_ids,
-        )
-        if component.is_external:
-            update_label = "manual, fuera de EAP"
-        kind_id = str(component.value["kind"])
-        detail_rows = [
-            f"Proveedor: {provider['displayName']}",
-            f"Actualización: {update_label}",
-        ]
-        if component.is_external:
-            executable = item.get("installation", {}).get("executable")
-            detail_rows.insert(
-                1,
-                "Ejecutable: "
-                + (str(executable) if executable else "sin vincular"),
-            )
-        data_entries = app.environments.ensure_component_data(
-            environment_id, component, item
-        )
-        for entry in data_entries:
-            if not entry["showInDashboard"]:
-                continue
-            target = entry["path"]
-            detail_rows.append(
-                f"{entry['displayName']}: {target}"
-            )
-        group_titles = {
-            "application": "Aplicaciones",
-            "external": "Componentes externos",
-            "runtime": "Runtimes",
-            "service": "Servicios",
-            "tool": "Herramientas",
-        }
-        group_title = group_titles.get(kind_id, "Otros componentes")
-        groups.setdefault(group_title, []).append(
+        missing_marker = " !" if component.id in missing_ids else ""
+        table_rows.append(
             [
-                f"{prefix}{component.display_name}{marker} · "
-                f"{item['version']}",
-                *detail_rows,
+                f"[{index}]" if numbered else str(index),
+                f"{component.display_name} · {item['version']}{missing_marker}",
+                str(provider["displayName"]),
+                _component_update_version(component.id, update_status),
+                f"[{index}i]" if numbered else "",
             ]
         )
-        group_counts[group_title] = group_counts.get(group_title, 0) + 1
-    ordered_titles = [
-        "Runtimes",
-        "Herramientas",
-        "Aplicaciones",
-        "Componentes externos",
-        "Servicios",
-        "Otros componentes",
-    ]
     return [
         (
-            f"{title} ({group_counts[title]})",
-            _layout_component_cards(groups[title]),
+            f"Componentes ({len(table_rows)})",
+            _component_table_rows(table_rows),
         )
-        for title in ordered_titles
-        if title in groups
     ]
 
 
-def _layout_component_cards(cards: list[list[str]]) -> list[str]:
-    content_width = _terminal_panel_width() - 4
-    gap = 2
-    columns = 2 if content_width >= 116 and len(cards) > 1 else 1
-    card_width = (
-        (content_width - gap) // 2 if columns == 2 else content_width
-    )
-    result: list[str] = []
-    for offset in range(0, len(cards), columns):
-        pending = cards[offset : offset + columns]
-        current_width = (
-            content_width
-            if columns == 2 and len(pending) == 1
-            else card_width
+def _component_table_rows(rows: list[list[str]]) -> list[str]:
+    headers = ["ID", "Nombre", "Proveedor", "Update", "Info"]
+    available = _terminal_panel_width() - 4
+    gap = "  "
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(headers)
+    ]
+    minimums = [len(header) for header in headers]
+    while sum(widths) + len(gap) * (len(headers) - 1) > available:
+        candidates = [
+            index
+            for index in (2, 1, 3, 0, 4)
+            if widths[index] > minimums[index]
+        ]
+        if not candidates:
+            break
+        selected = max(
+            candidates,
+            key=lambda index: widths[index] - minimums[index],
         )
-        row_cards = [
-            _component_card(card[0], card[1:], current_width)
-            for card in pending
-        ]
-        maximum_height = max(len(card) for card in row_cards)
-        normalized = [
-            _pad_component_card(card, current_width, maximum_height)
-            for card in row_cards
-        ]
-        for line_index in range(maximum_height):
-            result.append(
-                (" " * gap).join(
-                    card[line_index] for card in normalized
-                )
-            )
-        if offset + columns < len(cards):
-            result.append("")
-    return result
+        widths[selected] -= 1
 
+    def render(values: list[str]) -> str:
+        return gap.join(
+            _fit_text(value, widths[index]).ljust(widths[index])
+            for index, value in enumerate(values)
+        ).rstrip()
 
-def _component_card(
-    title: str, rows: list[str], width: int
-) -> list[str]:
-    rendered_rows: list[str] = []
-    available = max(1, width - 4)
-    for row in rows:
-        wrapped = textwrap.wrap(
-            row,
-            width=available,
-            break_long_words=True,
-            break_on_hyphens=False,
-            subsequent_indent="  ",
-        ) or [""]
-        rendered_rows.extend(_panel_row(line, width) for line in wrapped)
     return [
-        _panel_border("┌", "┐", title, width),
-        *rendered_rows,
-        "└" + ("─" * (width - 2)) + "┘",
+        render(headers),
+        render(["─" * width for width in widths]),
+        *(render(row) for row in rows),
     ]
 
 
-def _pad_component_card(
-    card: list[str], width: int, height: int
-) -> list[str]:
-    missing = height - len(card)
-    if missing <= 0:
-        return card
-    return [
-        *card[:-1],
-        *[_panel_row("", width) for _ in range(missing)],
-        card[-1],
-    ]
+def _component_update_version(
+    component_id: str, update_status: dict[str, Any]
+) -> str:
+    for update in update_status.get("updates", []):
+        if (
+            not isinstance(update, dict)
+            or str(update.get("family")) != component_id
+        ):
+            continue
+        latest = update.get("latestVersion")
+        if latest is None and isinstance(update.get("artifact"), dict):
+            latest = update["artifact"].get("version")
+        return str(latest) if latest else ""
+    return ""
 
 
 def _ordered_inventory(
@@ -1796,28 +1740,6 @@ def _ordered_inventory(
             ).casefold(),
         ),
     )
-
-
-def _component_update_label(
-    component_id: str,
-    update_status: dict[str, Any],
-    update_ids: set[str],
-    missing: bool,
-) -> str:
-    if missing:
-        return "payload ausente"
-    if component_id in update_ids:
-        if update_status.get("state") == "done":
-            return "disponible"
-        return "disponible (caché)"
-    state = update_status.get("state")
-    if state == "done":
-        return "al día"
-    if state == "error":
-        return "sin verificar"
-    if update_status.get("checked"):
-        return "al día (caché)"
-    return "sin comprobar"
 
 
 def _interactive_catalog(
@@ -1875,6 +1797,17 @@ def _interactive_catalog(
         option = _read_input("> ").strip().lower()
         if _is_escape(option) or option in {"v", "volver", "q"}:
             return update_status
+        if info_match := re.fullmatch(r"(\d+)i", option):
+            selected_index = int(info_match.group(1)) - 1
+            if not 0 <= selected_index < len(ordered_inventory):
+                print("Opción no válida.")
+                continue
+            selected = ordered_inventory[selected_index]
+            component = app.catalog.component(str(selected["id"]))
+            _interactive_component_information(
+                app, environment_id, component
+            )
+            continue
         if option == "r":
             update_status = _refresh_updates(
                 app,
@@ -2591,6 +2524,9 @@ def _interactive_install_component(
             f"Catálogo > {component.display_name}",
             [
                 ("Fuente", _component_source_rows(component)),
+                *_component_information_sections(
+                    app, environment_id, component
+                ),
                 ("Proveedor", provider_rows),
             ],
         )
@@ -2724,6 +2660,56 @@ def _component_source_rows(component: Any) -> list[str]:
     ]
 
 
+def _component_information_sections(
+    app: EapApplication,
+    environment_id: str,
+    component: Any,
+) -> list[tuple[str, list[str]]]:
+    desired = app.environments.read_desired(environment_id)
+    roots = {
+        "profile": (
+            app.paths.data / "profiles" / str(desired["dataProfile"])
+        ),
+        "workspace": (
+            app.paths.workspaces / str(desired["workspace"])
+        ),
+    }
+    path_rows: list[str] = []
+    for item in component.important_paths:
+        root = roots[str(item["base"])].resolve()
+        relative = PurePosixPath(str(item["relativePath"]))
+        target = root.joinpath(*relative.parts).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValidationError(
+                f"La ruta informativa sale de {item['base']}: "
+                f"{item['relativePath']}"
+            ) from exc
+        path_rows.append(f"{item['displayName']}: {target}")
+    return [
+        ("Descripción", [component.information_description]),
+        ("Rutas importantes", path_rows),
+    ]
+
+
+def _interactive_component_information(
+    app: EapApplication,
+    environment_id: str,
+    component: Any,
+) -> None:
+    _print_panel(
+        f"Información > {component.display_name}",
+        [
+            *_component_information_sections(
+                app, environment_id, component
+            ),
+            ("", ["[Esc] Volver"]),
+        ],
+    )
+    _read_input("> ")
+
+
 def _track_display(component: Any, track_id: int | str) -> str:
     for track in component.tracks:
         if str(track["id"]) == str(track_id):
@@ -2764,13 +2750,20 @@ def _print_panel(
                 )
             )
         for row in rows:
-            content = _fit_text(row, width - 4)
-            print(
-                _colorize_panel_row(
-                    _panel_row(row, width),
-                    content,
+            wrapped_rows = textwrap.wrap(
+                row,
+                width=width - 4,
+                break_long_words=True,
+                break_on_hyphens=False,
+                subsequent_indent="  ",
+            ) or [""]
+            for content in wrapped_rows:
+                print(
+                    _colorize_panel_row(
+                        _panel_row(content, width),
+                        content,
+                    )
                 )
-            )
     print(
         _style(
             "└" + ("─" * (width - 2)) + "┘",
@@ -2841,7 +2834,7 @@ def _style(text: str, color: str, stream: Any | None = None) -> str:
 def _colorize_panel_row(row: str, content: str) -> str:
     if not _COLOR_ENABLED or not _stream_is_terminal(sys.stdout):
         return row
-    marker_pattern = re.compile(r"\[(?:\d+|[A-Z]|Esc)\]")
+    marker_pattern = re.compile(r"\[(?:\d+i?|[A-Z]|Esc)\]")
     if content.startswith("┌─"):
         colored = _style(row, _ANSI_CYAN)
         return marker_pattern.sub(

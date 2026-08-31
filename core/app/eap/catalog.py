@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import ValidationError
@@ -72,6 +72,87 @@ class ComponentDefinition:
     @property
     def is_external(self) -> bool:
         return self.kind == "external"
+
+    @property
+    def information(self) -> dict[str, Any]:
+        return {
+            "description": self.information_description,
+            "paths": self.important_paths,
+        }
+
+    @property
+    def information_description(self) -> str:
+        info = self.value.get("info")
+        if isinstance(info, dict) and isinstance(
+            info.get("description"), str
+        ):
+            return str(info["description"])
+        description = self.value.get("description")
+        if isinstance(description, str) and description.strip():
+            return description.strip()
+        return f"Componente {self.display_name}."
+
+    @property
+    def important_paths(self) -> list[dict[str, str]]:
+        info = self.value.get("info")
+        if isinstance(info, dict) and isinstance(info.get("paths"), list):
+            return list(info["paths"])
+        result: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        data = self.value.get("data", {})
+        if isinstance(data, dict):
+            for collection in ("directories", "files"):
+                entries = data.get(collection, [])
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    raw_path = entry.get("path")
+                    display_name = entry.get("displayName")
+                    if not isinstance(raw_path, str) or not isinstance(
+                        display_name, str
+                    ):
+                        continue
+                    mapped = self._legacy_important_path(raw_path)
+                    if mapped is None or mapped in seen:
+                        continue
+                    seen.add(mapped)
+                    result.append(
+                        {
+                            "displayName": display_name,
+                            "base": mapped[0],
+                            "relativePath": mapped[1],
+                        }
+                    )
+        return result or [
+            {
+                "displayName": "Home del profile",
+                "base": "profile",
+                "relativePath": "home",
+            }
+        ]
+
+    def _legacy_important_path(
+        self, template: str
+    ) -> tuple[str, str] | None:
+        prefixes = (
+            ("{{profile.home}}", "profile", "home"),
+            (
+                "{{data.component}}",
+                "profile",
+                f"components/{self.id}",
+            ),
+            ("{{workspace.selected}}", "workspace", "."),
+        )
+        normalized = template.replace("\\", "/")
+        for prefix, base, root in prefixes:
+            if normalized == prefix:
+                return base, root
+            if normalized.startswith(prefix + "/"):
+                suffix = normalized[len(prefix) + 1 :]
+                return base, f"{root}/{suffix}" if root != "." else suffix
+        return None
 
     @property
     def source_id(self) -> str:
@@ -192,7 +273,7 @@ class Catalog:
             ),
             str(path),
         )
-        if value["schemaVersion"] != 1:
+        if value["schemaVersion"] not in {1, 2}:
             raise ValidationError(f"Schema de componente no soportado en {path}")
         if value["id"] != expected_id:
             raise ValidationError(
@@ -208,6 +289,11 @@ class Catalog:
             raise ValidationError(
                 f"Tipo de componente no soportado en {path}: {value['kind']!r}"
             )
+        if value["schemaVersion"] == 2:
+            require_fields(value, ("info",), str(path))
+        info = value.get("info")
+        if info is not None:
+            Catalog._validate_component_info(info, expected_id, path)
         if not isinstance(value["launchers"], list):
             raise ValidationError(f"launchers debe ser una lista en {path}")
         launcher_ids: set[str] = set()
@@ -600,6 +686,81 @@ class Catalog:
                 f"Política de actualización no válida en {path}: "
                 f"{value['updatePolicy']!r}"
             )
+
+    @staticmethod
+    def _validate_component_info(
+        info: Any, expected_id: str, path: Path
+    ) -> None:
+        if not isinstance(info, dict):
+            raise ValidationError(f"info debe ser un objeto en {path}")
+        require_fields(
+            info,
+            ("description", "paths"),
+            f"info de {expected_id}",
+        )
+        description = info["description"]
+        if (
+            not isinstance(description, str)
+            or not description.strip()
+            or description != description.strip()
+            or len(description) > 400
+            or len(re.findall(r"[.!?](?=\s|$)", description)) > 3
+        ):
+            raise ValidationError(
+                f"info.description debe contener entre una y tres frases "
+                f"breves en {path}"
+            )
+        important_paths = info["paths"]
+        if not isinstance(important_paths, list) or not important_paths:
+            raise ValidationError(
+                f"info.paths debe contener al menos una ruta en {path}"
+            )
+        seen_important_paths: set[tuple[str, str]] = set()
+        for important_path in important_paths:
+            if not isinstance(important_path, dict):
+                raise ValidationError(
+                    f"Ruta no válida en info.paths de {path}"
+                )
+            require_fields(
+                important_path,
+                ("displayName", "base", "relativePath"),
+                f"info.paths de {expected_id}",
+            )
+            display_name = important_path["displayName"]
+            base = important_path["base"]
+            relative_path = important_path["relativePath"]
+            if (
+                not isinstance(display_name, str)
+                or not display_name.strip()
+                or display_name != display_name.strip()
+                or base not in {"profile", "workspace"}
+                or not isinstance(relative_path, str)
+                or not relative_path
+                or "\\" in relative_path
+            ):
+                raise ValidationError(
+                    f"Ruta no válida en info.paths de {path}"
+                )
+            relative = PurePosixPath(relative_path)
+            if (
+                relative.is_absolute()
+                or relative_path != relative.as_posix()
+                or (
+                    relative_path != "."
+                    and any(part in {"", ".", ".."} for part in relative.parts)
+                )
+            ):
+                raise ValidationError(
+                    f"info.paths sólo admite rutas relativas seguras en {path}: "
+                    f"{relative_path!r}"
+                )
+            key = (str(base), relative_path.casefold())
+            if key in seen_important_paths:
+                raise ValidationError(
+                    f"Ruta duplicada en info.paths de {path}: "
+                    f"{relative_path!r}"
+                )
+            seen_important_paths.add(key)
 
     def component(self, component_id: str) -> ComponentDefinition:
         try:

@@ -6,6 +6,16 @@
   "description": "IDE portable con paquetes Java y Enterprise Java/Web",
   "category": "applications",
   "kind": "application",
+  "info": {
+    "description": "IDE portable con paquetes Java y Enterprise Java/Web.",
+    "paths": [
+      {
+        "displayName": "Datos privados Eclipse",
+        "base": "profile",
+        "relativePath": "components/eclipse"
+      }
+    ]
+  },
   "launchers": [
     {
       "id": "eclipse",
