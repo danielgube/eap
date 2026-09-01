@@ -5167,6 +5167,46 @@ class HostIntegrationTests(unittest.TestCase):
 
 
 class InterfaceTests(unittest.TestCase):
+    def test_pocketool_info_option_opens_pinned_readme_in_browser(self) -> None:
+        readme_url = (
+            "https://github.com/danielgube/eap-pocketools/blob/"
+            + "a" * 40
+            + "/pocketools/sessionkeep/README.md"
+        )
+        definition = SimpleNamespace(
+            id="sessionkeep",
+            name="Session Keep",
+            version="1.0.0",
+            selector="danielgube/sessionkeep",
+            source=SimpleNamespace(
+                id="danielgube",
+                repository_url=(
+                    "https://github.com/danielgube/eap-pocketools"
+                ),
+            ),
+            readme_url=readme_url,
+        )
+        app = SimpleNamespace(
+            available_pocketools=lambda **kwargs: [definition],
+            pocketools=SimpleNamespace(installed=lambda: []),
+        )
+        output = StringIO()
+        with (
+            patch.object(
+                cli_module, "_read_input", side_effect=["1i", "\x1b"]
+            ),
+            patch.object(
+                cli_module.webbrowser, "open", return_value=True
+            ) as browser_open,
+            redirect_stdout(output),
+        ):
+            cli_module._interactive_install_pocketool(app, "default")
+
+        browser_open.assert_called_once_with(readme_url, new=2)
+        rendered = output.getvalue()
+        self.assertIn("[1i] README.md", rendered)
+        self.assertIn("README.md abierto en el navegador", rendered)
+
     def test_cli_trust_enable_routes_to_selected_profile(self) -> None:
         calls: list[tuple[str, bool]] = []
         app = SimpleNamespace(

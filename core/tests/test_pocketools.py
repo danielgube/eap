@@ -231,6 +231,11 @@ class PocketToolTests(unittest.TestCase):
         self.assertEqual(1, len(available))
         self.assertEqual("github-tree", available[0].artifact["type"])
         self.assertEqual(client.revision, available[0].artifact["commit"])
+        self.assertEqual(
+            "https://github.com/danielgube/eap-pocketools/blob/"
+            f"{client.revision}/pocketools/sessionkeep/README.md",
+            available[0].readme_url,
+        )
         self.assertTrue(
             all(
                 "raw.githubusercontent.com" in item["url"]

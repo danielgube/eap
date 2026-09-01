@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import webbrowser
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -3879,25 +3880,53 @@ def _interactive_install_pocketool(
         (str(item["repository"]).casefold(), str(item["id"]).casefold()): item
         for item in app.pocketools.installed()
     }
-    rows = []
-    for index, definition in enumerate(definitions, start=1):
-        current = installed.get(
-            (definition.source.id.casefold(), definition.id.casefold())
-        )
-        suffix = (
-            f" · instalada {current['version']}"
-            if current is not None
-            else ""
-        )
-        rows.append(
-            f"[{index}] {definition.name} · {definition.version} · "
-            f"{definition.selector}{suffix}"
-        )
-    rows.append("[Esc] Volver")
-    _print_panel("Pocketools > Instalar", [("Disponibles", rows)])
-    selected_index = _read_index(len(definitions))
-    if selected_index is None:
-        return
+    while True:
+        _start_page("Inicio > Pocketools > Instalar")
+        rows = []
+        for index, definition in enumerate(definitions, start=1):
+            current = installed.get(
+                (definition.source.id.casefold(), definition.id.casefold())
+            )
+            suffix = (
+                f" · instalada {current['version']}"
+                if current is not None
+                else ""
+            )
+            readme_option = (
+                f" · [{index}i] README.md"
+                if definition.readme_url is not None
+                else ""
+            )
+            rows.append(
+                f"[{index}] {definition.name} · {definition.version} · "
+                f"{definition.selector}{suffix}{readme_option}"
+            )
+        rows.append("[Esc] Volver")
+        _print_panel("Pocketools > Instalar", [("Disponibles", rows)])
+        option = _read_input("> ").strip().lower()
+        if _is_escape(option) or option in {"v", "volver", "q"}:
+            return
+        if readme_match := re.fullmatch(r"(\d+)i", option):
+            readme_index = int(readme_match.group(1)) - 1
+            if not 0 <= readme_index < len(definitions):
+                print("Opción no válida.")
+                _pause_after_result()
+                continue
+            readme_url = definitions[readme_index].readme_url
+            if readme_url is None:
+                print("Esta Pocketool no publica un README.md navegable.")
+                _pause_after_result()
+                continue
+            _open_pocketool_readme(
+                definitions[readme_index].name, readme_url
+            )
+            continue
+        if not option.isdigit() or not 1 <= int(option) <= len(definitions):
+            print("Selección no válida.")
+            _pause_after_result()
+            continue
+        selected_index = int(option) - 1
+        break
     definition = definitions[selected_index]
     _start_page(
         f"Inicio > Pocketools > Instalar > {definition.name}"
@@ -3930,6 +3959,21 @@ def _interactive_install_pocketool(
     for result in results:
         action = "Instalada" if result.changed else "Ya instalada"
         print(f"{action}: {result.selector} {result.version}")
+    _pause_after_result()
+
+
+def _open_pocketool_readme(name: str, url: str) -> None:
+    try:
+        opened = webbrowser.open(url, new=2)
+    except (OSError, webbrowser.Error) as exc:
+        raise ValidationError(
+            f"No se pudo abrir el README.md de {name}: {exc}"
+        ) from exc
+    if not opened:
+        raise ValidationError(
+            f"El navegador no pudo abrir el README.md de {name}"
+        )
+    print(f"README.md abierto en el navegador: {url}")
     _pause_after_result()
 
 

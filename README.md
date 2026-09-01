@@ -729,6 +729,11 @@ archivos se descargan directamente desde ese commit y se contrastan con su
 tamaño e identificador de objeto Git. No hacen falta catálogos generados,
 GitHub Releases, tags ni ZIPs.
 
+En `Pocketools > Explorar e instalar`, el acceso numérico (`[1]`, `[2]`, etc.)
+abre la ficha de instalación y su variante informativa (`[1i]`, `[2i]`, etc.)
+abre el `README.md` de esa Pocketool en el navegador predeterminado, fijado a la
+misma revisión Git que el catálogo consultado.
+
 Cada instalación rechaza rutas inseguras y colisiones de comandos, y publica el
 lock y los shims de forma transaccional.
 Las dependencias entre Pocketools se resuelven como grafo y los ciclos se

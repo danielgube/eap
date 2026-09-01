@@ -11,7 +11,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 from .config import Settings
@@ -113,6 +113,33 @@ class PocketToolDefinition:
     @property
     def requirements(self) -> dict[str, list[dict[str, Any]]]:
         return dict(self.value["requires"])
+
+    @property
+    def readme_url(self) -> str | None:
+        artifact = self.artifact
+        if (
+            self.source.source_type != "github-tree"
+            or artifact.get("type") != "github-tree"
+        ):
+            return None
+        readme_path = next(
+            (
+                str(item.get("path", ""))
+                for item in artifact.get("files", [])
+                if isinstance(item, dict)
+                and str(item.get("path", "")).casefold() == "readme.md"
+            ),
+            None,
+        )
+        if readme_path is None:
+            return None
+        repository_path = quote(
+            f"pocketools/{self.id}/{readme_path}", safe="/"
+        )
+        return (
+            f"{self.source.repository_url}/blob/{artifact['commit']}/"
+            f"{repository_path}"
+        )
 
     def as_json(self) -> dict[str, Any]:
         return {
