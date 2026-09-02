@@ -25,6 +25,10 @@ from .util import (
     validate_id,
 )
 
+_CUSTOM_COMMAND_EXTENSIONS = frozenset(
+    {".bat", ".cmd", ".com", ".exe", ".ps1"}
+)
+
 
 @dataclass(frozen=True)
 class EnvironmentFiles:
@@ -763,7 +767,11 @@ class EnvironmentStore:
             str(path.resolve())
             for path in CoreTools.load(self.paths).environment_path_entries()
         ]
+        custom_commands_entry = str(
+            (profile / "custom-commands").resolve()
+        )
         pocketool_entry = str((self.paths.pocketools / "bin").resolve())
+        data_profiles_root = (self.paths.data / "profiles").resolve()
         base_entries: list[str] = []
         for entry in environment.get("PATH", "").split(os.pathsep):
             if not entry:
@@ -783,10 +791,24 @@ class EnvironmentStore:
                 normalized.resolve().relative_to(self.paths.pocketools)
                 continue
             except (OSError, ValueError):
-                base_entries.append(entry)
+                pass
+            try:
+                relative = normalized.resolve().relative_to(
+                    data_profiles_root
+                )
+                if (
+                    len(relative.parts) == 2
+                    and relative.parts[1].casefold()
+                    == "custom-commands"
+                ):
+                    continue
+            except (OSError, ValueError):
+                pass
+            base_entries.append(entry)
         environment["PATH"] = os.pathsep.join(
             [
                 *path_entries,
+                custom_commands_entry,
                 pocketool_entry,
                 *core_tool_entries,
                 *base_entries,
@@ -901,20 +923,66 @@ class EnvironmentStore:
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
+            content = self._render_environment_template(
+                str(entry["content"]),
+                entry["tokens"],
+                component_id,
+            )
             if target.exists():
                 if not target.is_file():
                     raise ValidationError(
                         f"El archivo administrado de {component_id} no es "
                         f"un archivo: {target}"
                     )
+                if entry["mode"] == "merge-properties":
+                    self._merge_managed_properties(target, content)
                 continue
-            content = self._render_environment_template(
-                str(entry["content"]),
-                entry["tokens"],
-                component_id,
-            )
             atomic_write_text(target, content)
         return entries
+
+    @staticmethod
+    def _merge_managed_properties(target: Path, managed_content: str) -> None:
+        managed: dict[str, str] = {}
+        for line_number, raw_line in enumerate(
+            managed_content.splitlines(), start=1
+        ):
+            line = raw_line.strip()
+            if not line or line.startswith(("#", ";", "!")):
+                continue
+            if "=" not in line:
+                raise ValidationError(
+                    "Propiedad administrada inválida en "
+                    f"{target}:{line_number}"
+                )
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in managed:
+                raise ValidationError(
+                    "Propiedad administrada duplicada o vacía en "
+                    f"{target}:{line_number}"
+                )
+            managed[key] = value.strip()
+
+        existing = target.read_text(encoding="utf-8-sig").splitlines()
+        merged: list[str] = []
+        applied: set[str] = set()
+        for raw_line in existing:
+            line = raw_line.strip()
+            key = line.split("=", 1)[0].strip() if "=" in line else None
+            if (
+                key is not None
+                and not line.startswith(("#", ";", "!"))
+                and key in managed
+            ):
+                if key not in applied:
+                    merged.append(f"{key}={managed[key]}")
+                    applied.add(key)
+                continue
+            merged.append(raw_line)
+        for key, value in managed.items():
+            if key not in applied:
+                merged.append(f"{key}={value}")
+        atomic_write_text(target, "\n".join(merged) + "\n")
 
     def ensure_config(self, environment_id: str) -> Path:
         files = self.files(environment_id)
@@ -1169,6 +1237,25 @@ class EnvironmentStore:
         )
         return self._ensure_data_profile(profile_id)
 
+    def custom_commands_path(self, environment_id: str) -> Path:
+        return self.ensure_profile(environment_id) / "custom-commands"
+
+    def custom_commands(self, environment_id: str) -> list[str]:
+        commands_root = self.custom_commands_path(environment_id)
+        commands: dict[str, str] = {}
+        for child in sorted(
+            commands_root.iterdir(),
+            key=lambda path: path.name.casefold(),
+        ):
+            if (
+                not child.is_file()
+                or child.suffix.casefold()
+                not in _CUSTOM_COMMAND_EXTENSIONS
+            ):
+                continue
+            commands.setdefault(child.stem.casefold(), child.stem)
+        return sorted(commands.values(), key=str.casefold)
+
     def _ensure_data_profile(self, profile_id: str) -> Path:
         validate_id(profile_id, "id de datos")
         profile = self.paths.require_within_root(
@@ -1183,6 +1270,7 @@ class EnvironmentStore:
             profile / "home" / ".cache",
             profile / "home" / ".local" / "share",
             profile / "components",
+            profile / "custom-commands",
         )
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)

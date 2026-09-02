@@ -1,6 +1,10 @@
 # Profile que EAP selecciona si todavía no existe una selección persistida.
 profile.default=default
 
+# Visor empleado al abrir configuraciones y otros archivos de texto.
+# Admite un ejecutable en PATH, una ruta absoluta o una ruta relativa a EAP.
+textViewer.executable=notepad.exe
+
 # Red y comprobación de actualizaciones.
 network.timeoutSeconds=20
 update.checkOnStartup=true

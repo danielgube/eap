@@ -34,7 +34,15 @@ Cambiar de proyecto es cambiar de profile; el resto lo reconstruye EAP.
   comandos: automatizaciones, helpers de confianza TLS, empaquetado de código y
   cualquier herramienta que merezca estar siempre a mano.
 - **Profiles** — selecciones reproducibles con lock, workspace, configuración
-  privada y datos de usuario aislados.
+  privada, datos de usuario aislados y comandos personalizados.
+
+Cada profile de datos incluye `custom-commands`. EAP crea la carpeta y la añade
+al `PATH` de sus procesos, pero no instala ni modifica su contenido. Los scripts
+`.cmd`, `.bat`, `.ps1` y los ejecutables que coloques allí quedan disponibles
+sólo para los profiles que compartan esos datos. Las exportaciones individuales
+pueden incluirlos de forma explícita; la exportación masiva siempre los excluye.
+El contenido del workspace nunca se incluye al exportar un profile: al importarlo,
+EAP conserva el workspace local existente o crea solamente su carpeta vacía.
 
 Todo lo que EAP administra vive dentro de su directorio. Las variables se
 inyectan únicamente en terminales y aplicaciones hijas: el registro y el entorno

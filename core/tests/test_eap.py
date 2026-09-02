@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -31,7 +32,12 @@ from eap.cli import _is_escape, _render_main_dashboard
 from eap.config import DEFAULTS, Settings
 from eap.core_tools import CoreTools
 from eap.environments import EnvironmentStore
-from eap.errors import IntegrityError, TransactionError, ValidationError
+from eap.errors import (
+    IntegrityError,
+    NetworkError,
+    TransactionError,
+    ValidationError,
+)
 from eap.host_integrations import HostIntegrationManager
 from eap.installer import ComponentInstaller
 from eap.network import HttpClient
@@ -1748,6 +1754,16 @@ class SettingsTests(unittest.TestCase):
                 "modern", new_settings.get("environment.default")
             )
 
+    def test_text_viewer_defaults_to_notepad(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = Settings.load(
+                Path(temporary) / "config.properties"
+            )
+        self.assertEqual(
+            "notepad.exe",
+            settings.get("textViewer.executable"),
+        )
+
 
 class ProxyTests(unittest.TestCase):
     def test_applies_standard_proxy_variables_and_redacts_credentials(
@@ -2289,6 +2305,49 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual("c" * 64, artifact.sha256)
             self.assertEqual(250, artifact.size)
 
+    def test_resolves_dbeaver_from_official_download_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = dbeaver_component(
+                Path(temporary) / "dbeaver.json"
+            )
+            component.value["tracks"] = [
+                {"id": 26, "displayName": "DBeaver 26.x estable"}
+            ]
+            component.value["defaultTrack"] = 26
+            component.value["providers"][0]["resolver"] = {
+                "type": "dbeaver-download-page",
+                "downloadPageUrl": "https://dbeaver.example/download/",
+                "filesBaseUrl": "https://dbeaver.example/files",
+                "assetTemplate": (
+                    "dbeaver-ce-{version}-windows-x86_64.zip"
+                ),
+            }
+            file_name = "dbeaver-ce-26.2.0-windows-x86_64.zip"
+            client = FakeTextHttpClient(
+                {
+                    "https://dbeaver.example/download/": (
+                        "<h1>Download DBeaver Community 26.2.0</h1>"
+                    ),
+                    (
+                        "https://dbeaver.example/files/26.2.0/checksum/"
+                        f"{file_name}.sha256"
+                    ): "d" * 64 + "\n",
+                }
+            )
+
+            artifact = resolve_component(
+                component, "community", 26, client
+            )
+
+            self.assertEqual("26.2.0", artifact.version)
+            self.assertEqual(26, artifact.track)
+            self.assertEqual(file_name, artifact.file_name)
+            self.assertEqual("d" * 64, artifact.sha256)
+            self.assertEqual(
+                f"https://dbeaver.example/files/26.2.0/{file_name}",
+                artifact.url,
+            )
+
 
 class ExtractionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -2437,6 +2496,116 @@ class ExtractionTests(unittest.TestCase):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_managed_properties_are_merged_without_losing_user_values(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            store = EnvironmentStore(paths)
+            store.create("default")
+            component = dbeaver_component(paths.temp / "dbeaver.json")
+            component.value["data"]["files"] = [
+                {
+                    "path": "{{data.component}}/workspace/core.prefs",
+                    "displayName": "Preferencias administradas",
+                    "role": "configuration",
+                    "showInDashboard": False,
+                    "mode": "merge-properties",
+                    "content": "ui.auto.update.check=false\n",
+                }
+            ]
+            target = (
+                paths.data
+                / "profiles"
+                / "default"
+                / "components"
+                / "dbeaver"
+                / "workspace"
+                / "core.prefs"
+            )
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "# user preference\n"
+                "ui.auto.update.check=true\n"
+                "sample.database.canceled=true\n",
+                encoding="utf-8",
+            )
+            locked = {
+                "id": "dbeaver",
+                "provider": "community",
+                "track": "26.1",
+                "version": "26.1.5",
+                "installPath": "components/dbeaver/community/26.1.5",
+            }
+
+            store.ensure_component_data("default", component, locked)
+
+            content = target.read_text(encoding="utf-8")
+            self.assertIn("# user preference", content)
+            self.assertIn("sample.database.canceled=true", content)
+            self.assertEqual(1, content.count("ui.auto.update.check="))
+            self.assertIn("ui.auto.update.check=false", content)
+
+    def test_custom_commands_are_profile_scoped_and_published_in_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            store = EnvironmentStore(paths)
+            store.create("default")
+            commands_root = store.custom_commands_path("default")
+            self.assertTrue(commands_root.is_dir())
+            for name in (
+                "legacy.com",
+                "mvndepens.cmd",
+                "notes.txt",
+                "script.ps1",
+                "testqa.bat",
+                "testqa.exe",
+                "utility.exe",
+            ):
+                (commands_root / name).write_text(
+                    f"contenido de {name}", encoding="utf-8"
+                )
+            inherited_commands = (
+                paths.data
+                / "profiles"
+                / "previous"
+                / "custom-commands"
+            )
+            inherited_commands.mkdir(parents=True)
+            with patch.dict(
+                os.environ,
+                {
+                    "PATH": os.pathsep.join(
+                        [
+                            str(inherited_commands),
+                            r"C:\Windows\System32",
+                        ]
+                    )
+                },
+                clear=True,
+            ):
+                environment = store.build_process_environment(
+                    "default", Catalog(paths, {}, {})
+                )
+
+            self.assertEqual(
+                ["legacy", "mvndepens", "script", "testqa", "utility"],
+                store.custom_commands("default"),
+            )
+            path_entries = environment["PATH"].split(os.pathsep)
+            self.assertEqual(str(commands_root.resolve()), path_entries[0])
+            self.assertNotIn(str(inherited_commands), path_entries)
+            self.assertEqual(
+                "contenido de mvndepens.cmd",
+                (commands_root / "mvndepens.cmd").read_text(
+                    encoding="utf-8"
+                ),
+            )
+
     def test_environments_can_share_and_reassign_data_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = EapPaths.from_root(Path(temporary))
@@ -3429,6 +3598,76 @@ class ManagedTerminalTests(unittest.TestCase):
 
 
 class ComponentLifecycleTests(unittest.TestCase):
+    def test_update_check_continues_and_migrates_obsolete_track(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            dbeaver = dbeaver_component(paths.temp / "dbeaver.json")
+            dbeaver.value["tracks"] = [
+                {"id": 26, "displayName": "DBeaver 26.x estable"}
+            ]
+            dbeaver.value["defaultTrack"] = 26
+            maven = maven_component(paths.temp / "maven.json")
+            catalog = Catalog(
+                paths, {}, {"dbeaver": dbeaver, "maven": maven}
+            )
+            store = EnvironmentStore(paths)
+            store.create("default")
+            lock = store.read_lock("default")
+            lock["components"] = [
+                {
+                    "id": "maven",
+                    "provider": "apache",
+                    "track": 3,
+                    "version": "3.9.11",
+                },
+                {
+                    "id": "dbeaver",
+                    "provider": "community",
+                    "track": "26.1",
+                    "version": "26.1.5",
+                },
+            ]
+            atomic_write_json(store.files("default").lock, lock)
+            latest = ResolvedArtifact(
+                family="dbeaver",
+                component_id="dbeaver-community",
+                provider="community",
+                provider_name="DBeaver Community",
+                track=26,
+                version="26.2.0",
+                url="https://dbeaver.example/dbeaver.zip",
+                file_name="dbeaver.zip",
+                sha256="a" * 64,
+                size=None,
+                metadata_url="https://dbeaver.example/download/",
+            )
+            app = EapApplication.__new__(EapApplication)
+            app.paths = paths
+            app.catalog = catalog
+            app.environments = store
+            app.update_cache_path = paths.data / "update-checks.json"
+
+            def resolve(
+                family: str, provider: str, track: int | str
+            ) -> ResolvedArtifact:
+                if family == "maven":
+                    raise NetworkError("GitHub rate limit exceeded")
+                self.assertEqual(26, track)
+                return latest
+
+            errors: dict[str, str] = {}
+            with patch.object(app, "resolve", side_effect=resolve):
+                updates = app.check_updates(
+                    "default", persist=False, errors=errors
+                )
+
+            self.assertEqual(["dbeaver"], [item.family for item in updates])
+            self.assertEqual(26, updates[0].track)
+            self.assertEqual(
+                {"maven": "GitHub rate limit exceeded"}, errors
+            )
+
     def test_disabled_payload_can_be_reactivated_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = EapPaths.from_root(Path(temporary))
@@ -4711,6 +4950,7 @@ class TransferTests(unittest.TestCase):
             "default", "dani", include_components=False
         )
         self.assertTrue(exported.archive.is_file())
+        self.assertFalse(exported.custom_commands_included)
         listing = subprocess.run(
             [
                 str(self.core_tools.tool("7zip").executable("7z.exe")),
@@ -4729,7 +4969,7 @@ class TransferTests(unittest.TestCase):
             if line.startswith("Path = ")
         ]
         self.assertIn("envs/dani/environment.json", paths)
-        self.assertIn("workspaces/dani/project.txt", paths)
+        self.assertFalse(any(path.startswith("workspaces/") for path in paths))
         self.assertIn("eap-env-package.json", paths)
         self.assertNotIn("eap.cmd", paths)
         self.assertFalse(any(path.startswith("core/") for path in paths))
@@ -4759,15 +4999,149 @@ class TransferTests(unittest.TestCase):
         self.assertEqual("dani", imported.environment_id)
         self.assertEqual(1, imported.components_missing)
         self.assertFalse(imported.configuration_included)
+        self.assertFalse(imported.custom_commands_included)
         desired = self.store.read_desired("dani")
         self.assertEqual("dani", desired["dataProfile"])
         self.assertEqual("dani", desired["workspace"])
+        self.assertTrue((self.paths.workspaces / "dani").is_dir())
+        self.assertFalse(
+            (self.paths.workspaces / "dani" / "project.txt").exists()
+        )
+
+    def test_import_preserves_existing_local_workspace_contents(self) -> None:
+        exported = self.transfer.export_environment(
+            "default", "local-workspace", include_components=False
+        )
+        local_workspace = self.paths.workspaces / "local-workspace"
+        local_workspace.mkdir()
+        local_file = local_workspace / "local.txt"
+        local_file.write_text("do not replace", encoding="utf-8")
+
+        imported = self.transfer.import_environment(exported.archive)
+
+        self.assertEqual("local-workspace", imported.workspace_id)
         self.assertEqual(
-            "portable",
-            (self.paths.workspaces / "dani" / "project.txt").read_text(
+            "do not replace", local_file.read_text(encoding="utf-8")
+        )
+
+    def test_import_ignores_packaged_workspace_contents(self) -> None:
+        exported = self.transfer.export_environment(
+            "default", "legacy-workspace", include_components=False
+        )
+        injected_root = self.paths.temp / "legacy-workspace-content"
+        injected_workspace = (
+            injected_root / "workspaces" / "legacy-workspace"
+        )
+        injected_workspace.mkdir(parents=True)
+        (injected_workspace / "foreign.txt").write_text(
+            "must not import", encoding="utf-8"
+        )
+        subprocess.run(
+            [
+                str(self.core_tools.tool("7zip").executable("7z.exe")),
+                "a",
+                "-bd",
+                "-y",
+                str(exported.archive),
+                ".",
+            ],
+            cwd=injected_root,
+            capture_output=True,
+            check=True,
+        )
+
+        imported = self.transfer.import_environment(exported.archive)
+
+        self.assertEqual("legacy-workspace", imported.workspace_id)
+        self.assertFalse(
+            (
+                self.paths.workspaces
+                / "legacy-workspace"
+                / "foreign.txt"
+            ).exists()
+        )
+
+    def test_custom_commands_require_opt_in_and_are_restored(self) -> None:
+        commands = self.store.custom_commands_path("default")
+        (commands / "deploy.cmd").write_text(
+            "@echo deploy\n", encoding="utf-8"
+        )
+        helpers = commands / "helpers"
+        helpers.mkdir()
+        (helpers / "settings.json").write_text(
+            '{"portable": true}\n', encoding="utf-8"
+        )
+
+        exported = self.transfer.export_environment(
+            "default",
+            "with-commands",
+            include_components=False,
+            include_custom_commands=True,
+        )
+        self.assertTrue(exported.custom_commands_included)
+        manifest_text = subprocess.run(
+            [
+                str(self.core_tools.tool("7zip").executable("7z.exe")),
+                "e",
+                "-so",
+                str(exported.archive),
+                "eap-env-package.json",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertTrue(
+            json.loads(manifest_text)["customCommandsIncluded"]
+        )
+
+        imported = self.transfer.import_environment(exported.archive)
+        imported_commands = self.store.custom_commands_path(
+            "with-commands"
+        )
+        self.assertTrue(imported.custom_commands_included)
+        self.assertEqual(
+            "@echo deploy\n",
+            (imported_commands / "deploy.cmd").read_text(
                 encoding="utf-8"
             ),
         )
+        self.assertEqual(
+            '{"portable": true}\n',
+            (imported_commands / "helpers" / "settings.json").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+    def test_custom_commands_import_does_not_overwrite_local_files(
+        self,
+    ) -> None:
+        commands = self.store.custom_commands_path("default")
+        (commands / "exported.cmd").touch()
+        exported = self.transfer.export_environment(
+            "default",
+            "collision",
+            include_components=False,
+            include_custom_commands=True,
+        )
+        local_commands = (
+            self.paths.data
+            / "profiles"
+            / "collision"
+            / "custom-commands"
+        )
+        local_commands.mkdir(parents=True)
+        local = local_commands / "local.cmd"
+        local.write_text("local\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "custom-commands de destino no está vacía",
+        ):
+            self.transfer.import_environment(exported.archive)
+
+        self.assertEqual("local\n", local.read_text(encoding="utf-8"))
+        self.assertFalse((self.paths.envs / "collision").exists())
 
     def test_private_environment_config_requires_explicit_opt_in(self) -> None:
         config = self.store.files("default").config
@@ -5018,6 +5392,17 @@ class TransferTests(unittest.TestCase):
             self.transfer._remove_staging(staging)
         self.assertEqual(2, remove.call_count)
         sleep.assert_called_once_with(0.1)
+
+    def test_staging_cleanup_removes_readonly_files(self) -> None:
+        staging = self.paths.temp / "exports" / "readonly-test"
+        staging.mkdir(parents=True)
+        readonly = staging / "command.cmd"
+        readonly.write_text("@echo off\n", encoding="utf-8")
+        readonly.chmod(readonly.stat().st_mode & ~stat.S_IWRITE)
+
+        self.transfer._remove_staging(staging)
+
+        self.assertFalse(staging.exists())
 
 
 class HostIntegrationTests(unittest.TestCase):
@@ -5355,6 +5740,68 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("Carpeta abierta:", rendered)
             self.assertIn("Archivo abierto:", rendered)
 
+    def test_configuration_actions_use_configured_text_viewer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            environments = EnvironmentStore(paths)
+            environments.create("default")
+            environments.create("java11")
+            viewer = paths.root / "tools" / "viewer.exe"
+            viewer.parent.mkdir()
+            viewer.touch()
+            paths.config.write_text(
+                f"textViewer.executable={viewer}\n",
+                encoding="utf-8",
+            )
+            app = SimpleNamespace(
+                paths=paths,
+                environments=environments,
+            )
+            output = StringIO()
+            with (
+                patch.object(cli_module, "_read_input", return_value="2"),
+                patch.object(cli_module.subprocess, "Popen") as popen,
+                redirect_stdout(output),
+            ):
+                cli_module._interactive_open_general_configuration(app)
+                cli_module._interactive_open_profile_configuration(
+                    app, "default"
+                )
+
+            self.assertEqual(
+                [
+                    [str(viewer), str(paths.config)],
+                    [
+                        str(viewer),
+                        str(
+                            paths.envs
+                            / "java11"
+                            / "config.properties"
+                        ),
+                    ],
+                ],
+                [call.args[0] for call in popen.call_args_list],
+            )
+            rendered = output.getvalue()
+            self.assertIn("[1] default (actual)", rendered)
+            self.assertIn("[2] java11", rendered)
+
+    def test_missing_configured_text_viewer_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            paths.config.write_text(
+                "textViewer.executable=missing-viewer.exe\n",
+                encoding="utf-8",
+            )
+            app = SimpleNamespace(paths=paths)
+            with self.assertRaisesRegex(
+                ValidationError,
+                "textViewer.executable",
+            ):
+                cli_module._text_viewer_executable(app)
+
     def test_component_table_includes_repository_and_inactive_payloads(
         self,
     ) -> None:
@@ -5577,8 +6024,10 @@ class InterfaceTests(unittest.TestCase):
                     (
                         "",
                         [
+                            "Nombre: java11",
                             "Firefox: OK",
                             "[W] Workspace",
+                            "[CC] Custom Commands",
                             "[10] Gestionar",
                             "Estado: KO",
                         ],
@@ -5589,8 +6038,13 @@ class InterfaceTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("\x1b[1;36m", rendered)
         self.assertIn("\x1b[32mOK\x1b[0m", rendered)
+        self.assertIn(
+            "Nombre: \x1b[32mjava11\x1b[0m",
+            rendered,
+        )
         self.assertIn("\x1b[31mKO\x1b[0m", rendered)
         self.assertIn("\x1b[33m[W]\x1b[0m", rendered)
+        self.assertIn("\x1b[33m[CC]\x1b[0m", rendered)
         self.assertIn("\x1b[33m[10]\x1b[0m", rendered)
         visible = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
         self.assertTrue(
@@ -5773,7 +6227,7 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module,
                 "_read_input",
-                side_effect=["3", "4", "5", "6", "\x1b"],
+                side_effect=["3", "4", "5", "6", "7", "8", "\x1b"],
             ),
             patch.object(cli_module, "_interactive_doctor") as doctor,
             patch.object(
@@ -5785,6 +6239,12 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module, "_interactive_update_eap", return_value=False
             ) as update_eap,
+            patch.object(
+                cli_module, "_interactive_open_general_configuration"
+            ) as general_configuration,
+            patch.object(
+                cli_module, "_interactive_open_profile_configuration"
+            ) as profile_configuration,
             redirect_stdout(output),
         ):
             selected = cli_module._interactive_advanced_options(
@@ -5795,6 +6255,10 @@ class InterfaceTests(unittest.TestCase):
         clean.assert_called_once()
         integrations.assert_called_once_with(unittest.mock.ANY, "default")
         update_eap.assert_called_once()
+        general_configuration.assert_called_once()
+        profile_configuration.assert_called_once_with(
+            unittest.mock.ANY, "default"
+        )
         rendered = output.getvalue()
         self.assertIn("[1] Exportar todos los profiles", rendered)
         self.assertIn("[2] Importar todos los profiles", rendered)
@@ -5802,6 +6266,8 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("[4] Limpiar temporales", rendered)
         self.assertIn("[5] Integraciones con el Host", rendered)
         self.assertIn("[6] Actualizar EAP", rendered)
+        self.assertIn("[7] Abrir configuración general", rendered)
+        self.assertIn("[8] Abrir configuración de un profile", rendered)
         self.assertIn("[0] Exportar EAP", rendered)
 
     def test_cli_installs_public_eap_update(self) -> None:
@@ -5883,13 +6349,14 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("Pulse una tecla para continuar...", output.getvalue())
 
     def test_bulk_export_uses_default_options_and_continues_on_error(self) -> None:
-        calls: list[tuple[str, str, bool, bool]] = []
+        calls: list[tuple[str, str, bool, bool, bool]] = []
 
         def export_profile(
             source: str,
             name: str,
             include_components: bool,
             include_configuration: bool,
+            include_custom_commands: bool,
         ) -> Any:
             calls.append(
                 (
@@ -5897,6 +6364,7 @@ class InterfaceTests(unittest.TestCase):
                     name,
                     include_components,
                     include_configuration,
+                    include_custom_commands,
                 )
             )
             if source == "alpha":
@@ -5911,13 +6379,60 @@ class InterfaceTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                ("alpha", "alpha", False, False),
-                ("beta", "beta", False, False),
+                ("alpha", "alpha", False, False, False),
+                ("beta", "beta", False, False, False),
             ],
             calls,
         )
         self.assertEqual(["beta"], [item[0] for item in exported])
         self.assertEqual([("alpha", "archive exists")], failures)
+
+    def test_interactive_profile_export_can_include_custom_commands(
+        self,
+    ) -> None:
+        calls: list[tuple[str, str, dict[str, bool]]] = []
+        result = SimpleNamespace(
+            archive=Path("hbx.7z"),
+            configuration_included=False,
+            custom_commands_included=True,
+            sha256="a" * 64,
+        )
+        app = SimpleNamespace(
+            export_environment=lambda source, name, **options: (
+                calls.append((source, name, options)) or result
+            )
+        )
+        output = StringIO()
+        with (
+            patch.object(
+                cli_module,
+                "_read_input",
+                side_effect=["hbx", "n", "n", "s"],
+            ) as read_input,
+            redirect_stdout(output),
+        ):
+            cli_module._interactive_export_environment(app, "default")
+
+        self.assertEqual(
+            [
+                (
+                    "default",
+                    "hbx",
+                    {
+                        "include_components": False,
+                        "include_configuration": False,
+                        "include_custom_commands": True,
+                    },
+                )
+            ],
+            calls,
+        )
+        rendered = output.getvalue()
+        self.assertIn(
+            "¿Incluir custom-commands del profile?",
+            read_input.call_args_list[3].args[0],
+        )
+        self.assertIn("Custom Commands incluidos: sí", rendered)
 
     def test_bulk_import_deletes_only_successful_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -6156,6 +6671,15 @@ class InterfaceTests(unittest.TestCase):
             "import-all",
             parser.parse_args(["profile", "import-all"]).env_command,
         )
+        export = parser.parse_args(
+            [
+                "profile",
+                "export",
+                "portable",
+                "--include-custom-commands",
+            ]
+        )
+        self.assertTrue(export.include_custom_commands)
 
     def test_interactive_profile_creation_can_reuse_data(
         self,
@@ -6631,7 +7155,15 @@ class InterfaceTests(unittest.TestCase):
         }
         selected = {"id": "java"}
         component = SimpleNamespace(id="java")
+        custom_commands_path = Path("custom-commands")
+        profile_path = Path("profile")
         app = SimpleNamespace(
+            environments=SimpleNamespace(
+                custom_commands_path=lambda environment_id: (
+                    custom_commands_path
+                ),
+                ensure_profile=lambda environment_id: profile_path,
+            ),
             inventory=lambda environment_id: [selected],
             catalog=SimpleNamespace(
                 component=lambda component_id: component
@@ -6657,6 +7189,8 @@ class InterfaceTests(unittest.TestCase):
                     "w",
                     "d",
                     "t",
+                    "h",
+                    "cc",
                     "c",
                     "p",
                     "1i",
@@ -6674,6 +7208,9 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module, "_interactive_clean_temporary_storage"
             ) as temporary_storage,
+            patch.object(
+                cli_module, "_open_component_information_path"
+            ) as open_path,
             patch.object(
                 cli_module,
                 "_interactive_catalog",
@@ -6707,6 +7244,23 @@ class InterfaceTests(unittest.TestCase):
         workspace.assert_called_once_with(app, "default")
         data_profile.assert_called_once_with(app, "default")
         temporary_storage.assert_called_once_with(app)
+        self.assertEqual(
+            [
+                (
+                    app,
+                    "Home del profile",
+                    profile_path / "home",
+                    "directory",
+                ),
+                (
+                    app,
+                    "Custom Commands",
+                    custom_commands_path,
+                    "directory",
+                ),
+            ],
+            [call.args for call in open_path.call_args_list],
+        )
         catalog.assert_called_once_with(app, "default", status)
         pocketools.assert_called_once_with(app, "default")
         component_actions.assert_called_once_with(
@@ -6939,6 +7493,10 @@ class InterfaceTests(unittest.TestCase):
             )
             environments = EnvironmentStore(paths)
             environments.create("default")
+            commands_root = environments.custom_commands_path("default")
+            (commands_root / "mvndepens.cmd").touch()
+            (commands_root / "testqa.CMD").touch()
+            (commands_root / "not-a-command.txt").touch()
             inventory = [
                 {
                     "id": "java",
@@ -7068,6 +7626,14 @@ class InterfaceTests(unittest.TestCase):
             self.assertNotIn("[4] Limpiar temporales", rendered)
             self.assertIn("[T] Temporales: 1.5 KiB · 2 archivo(s)", rendered)
             self.assertIn(
+                "[CC] Custom Commands: " + str(commands_root),
+                rendered,
+            )
+            self.assertIn("· mvndepens,", rendered)
+            self.assertIn("testqa", rendered)
+            self.assertNotIn("mvndepens.cmd", rendered)
+            self.assertNotIn("testqa.CMD", rendered)
+            self.assertIn(
                 "[C] Catálogo Components: 2 repositorio(s) externo(s)",
                 rendered,
             )
@@ -7093,6 +7659,19 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn(
                 "[D] Datos: " + str(paths.data / "profiles" / "default"),
                 rendered,
+            )
+            self.assertIn(
+                "[H] Home: "
+                + str(paths.data / "profiles" / "default" / "home"),
+                rendered,
+            )
+            self.assertLess(
+                rendered.index("[D] Datos:"),
+                rendered.index("[H] Home:"),
+            )
+            self.assertLess(
+                rendered.index("[H] Home:"),
+                rendered.index("[W] Workspace:"),
             )
             self.assertIn(
                 "[W] Workspace: " + str(paths.workspaces / "default"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from .config import Settings, load_properties
 from .console import console_title
 from .core_tools import CoreTools
 from .environments import EnvironmentStore
-from .errors import TransactionError, ValidationError
+from .errors import EapError, TransactionError, ValidationError
 from .host_integrations import (
     HostIntegrationChange,
     HostIntegrationManager,
@@ -50,7 +51,11 @@ from .releases import (
     EapUpdateStatus,
     GitHubApiClient,
 )
-from .resolvers import ResolvedArtifact, resolve_component
+from .resolvers import (
+    ResolvedArtifact,
+    resolve_component,
+    version_belongs_to_track,
+)
 from .shortcuts import ShortcutResult, WindowsShortcutManager
 from .terminal import ManagedTerminal, TerminalLaunch
 from .transfers import (
@@ -693,6 +698,7 @@ class EapApplication:
         exported_environment_id: str,
         include_components: bool,
         include_configuration: bool = False,
+        include_custom_commands: bool = False,
         force: bool = False,
     ) -> ExportResult:
         return self._transfer().export_environment(
@@ -700,6 +706,7 @@ class EapApplication:
             exported_environment_id,
             include_components,
             include_configuration=include_configuration,
+            include_custom_commands=include_custom_commands,
             force=force,
         )
 
@@ -1272,7 +1279,10 @@ class EapApplication:
         return resolved
 
     def check_updates(
-        self, environment_id: str, persist: bool = True
+        self,
+        environment_id: str,
+        persist: bool = True,
+        errors: dict[str, str] | None = None,
     ) -> list[UpdateInfo]:
         lock = self.environments.read_lock(environment_id)
         updates: list[UpdateInfo] = []
@@ -1280,58 +1290,109 @@ class EapApplication:
             family = str(item["id"])
             if self.catalog.component(family).is_external:
                 continue
-            provider = str(item["provider"])
-            track = item["track"]
-            current = str(item["version"])
-            latest = self.resolve(family, provider, track)
-            if component_version_key(
-                family, latest.version, provider
-            ) > component_version_key(family, current, provider):
-                updates.append(
-                    UpdateInfo(
-                        family=family,
-                        provider=provider,
-                        track=track,
-                        current_version=current,
-                        latest=latest,
-                    )
-                )
-        if persist:
+            try:
+                update = self._resolve_locked_update(item)
+            except EapError as exc:
+                if errors is None:
+                    raise
+                errors[family] = str(exc)
+                continue
+            if update is not None:
+                updates.append(update)
+        if persist and not errors:
             self._save_update_cache(environment_id, updates)
         return updates
 
-    def update(
+    def resolve_update(
         self, environment_id: str, component_id: str
-    ) -> tuple[ResolvedArtifact, Path] | None:
-        current = None
-        for item in self.inventory(environment_id):
-            if item.get("id") == component_id:
-                current = item
-                break
+    ) -> UpdateInfo | None:
+        current = next(
+            (
+                item
+                for item in self.inventory(environment_id)
+                if item.get("id") == component_id
+            ),
+            None,
+        )
         if current is None:
             raise ValidationError(
                 f"{component_id} no está instalado en {environment_id}"
             )
+        return self._resolve_locked_update(current)
+
+    def _resolve_locked_update(
+        self, current: dict[str, Any]
+    ) -> UpdateInfo | None:
+        family = str(current["id"])
+        component = self.catalog.component(family)
+        if component.is_external:
+            return None
+        provider = str(current["provider"])
+        current_version = str(current["version"])
+        track = self._effective_update_track(
+            component,
+            current["track"],
+            current_version,
+        )
+        latest = self.resolve(family, provider, track)
+        if component_version_key(
+            family, latest.version, provider
+        ) <= component_version_key(family, current_version, provider):
+            return None
+        return UpdateInfo(
+            family=family,
+            provider=provider,
+            track=track,
+            current_version=current_version,
+            latest=latest,
+        )
+
+    @staticmethod
+    def _effective_update_track(
+        component: ComponentDefinition,
+        locked_track: int | str,
+        current_version: str,
+    ) -> int | str:
+        try:
+            return component.validate_track(locked_track)
+        except ValidationError as original_error:
+            candidates = [
+                item["id"]
+                for item in component.tracks
+                if version_belongs_to_track(item["id"], current_version)
+            ]
+            default_track = component.value["defaultTrack"]
+            if default_track in candidates:
+                return default_track
+            if candidates:
+                return max(
+                    candidates,
+                    key=lambda value: len(
+                        tuple(
+                            int(number)
+                            for number in re.findall(r"\d+", str(value))
+                        )
+                    ),
+                )
+            raise original_error
+
+    def update(
+        self, environment_id: str, component_id: str
+    ) -> tuple[ResolvedArtifact, Path] | None:
         if self.catalog.component(component_id).is_external:
             raise ValidationError(
                 "Los componentes externos no se actualizan desde EAP; "
                 "puede cambiar la ruta de su ejecutable"
             )
-        provider = str(current["provider"])
-        track = current["track"]
-        latest = self.resolve(component_id, provider, track)
-        if component_version_key(
-            component_id, latest.version, provider
-        ) <= component_version_key(
-            component_id, str(current["version"]), provider
-        ):
+        update = self.resolve_update(environment_id, component_id)
+        if update is None:
             return None
         return self.install(
             environment_id,
             component_id,
-            provider,
-            track,
-            artifact=latest,
+            update.provider,
+            update.track,
+            artifact=update.latest,
         )
 
     def check_eap_update(self) -> EapUpdateStatus:

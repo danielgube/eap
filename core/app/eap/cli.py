@@ -18,9 +18,9 @@ except ImportError:  # pragma: no cover - EAP se ejecuta en Windows
     msvcrt = None
 
 from .application import EapApplication, UpdateInfo
+from .config import Settings
 from .console import console_title, set_console_title
 from .errors import EapError, ValidationError
-from .util import component_version_key
 
 _ESCAPE = "\x1b"
 _ANSI_RESET = "\x1b[0m"
@@ -400,6 +400,11 @@ def _configure_profile_parser(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="incluir config.properties privado del profile",
     )
+    export.add_argument(
+        "--include-custom-commands",
+        action="store_true",
+        help="incluir custom-commands del profile",
+    )
     export.add_argument("--force", action="store_true")
     import_parser = subparsers.add_parser(
         "import", help="importar un profile desde un archivo 7z"
@@ -735,6 +740,9 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 arguments.name,
                 include_components=arguments.include_components,
                 include_configuration=arguments.include_config,
+                include_custom_commands=(
+                    arguments.include_custom_commands
+                ),
                 force=arguments.force,
             )
             print(f"Exportado: {result.archive}")
@@ -750,6 +758,10 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 "Configuración privada incluida: "
                 + ("sí" if result.configuration_included else "no")
             )
+            print(
+                "Custom Commands incluidos: "
+                + ("sí" if result.custom_commands_included else "no")
+            )
             print(f"Tamaño: {result.size / (1024 * 1024):.1f} MiB")
             print(f"SHA256: {result.sha256}")
             return 0
@@ -761,6 +773,10 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
             print(
                 "Configuración privada importada: "
                 + ("sí" if result.configuration_included else "no")
+            )
+            print(
+                "Custom Commands importados: "
+                + ("sí" if result.custom_commands_included else "no")
             )
             if result.components_missing:
                 print(
@@ -1239,34 +1255,27 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
 
         if arguments.component_command == "check-updates":
             environment_id = _require_environment(app, arguments.environment)
-            updates = app.check_updates(environment_id)
+            errors: dict[str, str] = {}
+            updates = app.check_updates(environment_id, errors=errors)
             if arguments.json:
                 _print_json([item.as_json() for item in updates])
             else:
                 _print_updates(updates)
+                for component_id, error in errors.items():
+                    print(f"AVISO: {component_id}: {error}")
             return 0
 
         if arguments.component_command == "update":
             environment_id = _require_environment(app, arguments.environment)
-            current = _find_locked_component(
-                app.inventory(environment_id), arguments.component
+            update = app.resolve_update(
+                environment_id, arguments.component
             )
-            latest = app.resolve(
-                arguments.component,
-                str(current["provider"]),
-                current["track"],
-            )
-            provider = str(current["provider"])
-            if component_version_key(
-                arguments.component, latest.version, provider
-            ) <= component_version_key(
-                arguments.component, str(current["version"]), provider
-            ):
+            if update is None:
                 print("Ya está instalada la última versión de esta línea.")
                 return 0
             print(
-                f"{current['version']} -> {latest.version} "
-                f"({current['provider']}, línea {current['track']})"
+                f"{update.current_version} -> {update.latest.version} "
+                f"({update.provider}, línea {update.track})"
             )
             if not arguments.yes and not _confirm("¿Actualizar?"):
                 print("Cancelado.")
@@ -1274,9 +1283,9 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
             artifact, install_path = app.install(
                 environment_id,
                 arguments.component,
-                str(current["provider"]),
-                current["track"],
-                artifact=latest,
+                update.provider,
+                update.track,
+                artifact=update.latest,
             )
             print(f"Actualizado a {artifact.version}: {install_path}")
             _print_activation_notice(environment_id)
@@ -1438,7 +1447,24 @@ def _run_interactive(
                     app, environment_id, shell_on_exit
                 )
             try:
-                if option == "c":
+                if option == "h":
+                    _open_component_information_path(
+                        app,
+                        "Home del profile",
+                        app.environments.ensure_profile(environment_id)
+                        / "home",
+                        "directory",
+                    )
+                elif option == "cc":
+                    _open_component_information_path(
+                        app,
+                        "Custom Commands",
+                        app.environments.custom_commands_path(
+                            environment_id
+                        ),
+                        "directory",
+                    )
+                elif option == "c":
                     update_status = _interactive_catalog(
                         app, environment_id, update_status
                     )
@@ -1539,6 +1565,7 @@ def _initial_update_status(
         "updates": cached,
         "resolved": [],
         "error": None,
+        "errors": {},
         "checked": app.has_cached_update_check(environment_id),
     }
     if _missing_components(app, environment_id):
@@ -1559,12 +1586,14 @@ def _refresh_updates(
     if announce:
         print(f"Comprobando actualizaciones de {environment_id}...")
     try:
-        updates = app.check_updates(environment_id)
+        errors: dict[str, str] = {}
+        updates = app.check_updates(environment_id, errors=errors)
         return {
-            "state": "done",
+            "state": "partial" if errors else "done",
             "updates": [item.as_json() for item in updates],
             "resolved": updates,
-            "error": None,
+            "error": next(iter(errors.values()), None),
+            "errors": errors,
             "checked": True,
         }
     except EapError as exc:
@@ -1574,6 +1603,7 @@ def _refresh_updates(
             "updates": cached,
             "resolved": [],
             "error": str(exc),
+            "errors": {},
             "checked": previous.get("checked", False) if previous else False,
         }
 
@@ -1591,6 +1621,7 @@ def _render_main_dashboard(
     workspace_path = (
         app.paths.workspaces / str(desired["workspace"])
     )
+    home_path = profile_path / "home"
     temporary_usage = app.temporary_storage_usage()
     component_source_count = len(app.component_repositories.sources())
     pocketool_source_count = len(app.pocketools.sources())
@@ -1602,6 +1633,13 @@ def _render_main_dashboard(
         " (" + ", ".join(installed_pocketool_ids) + ")"
         if installed_pocketool_ids
         else ""
+    )
+    custom_commands_path = app.environments.custom_commands_path(
+        environment_id
+    )
+    custom_commands = app.environments.custom_commands(environment_id)
+    custom_commands_display = (
+        ", ".join(custom_commands) if custom_commands else "(sin comandos)"
     )
     inventory = app.inventory(environment_id)
     component_entries = _profile_component_entries(app, environment_id)
@@ -1620,6 +1658,10 @@ def _render_main_dashboard(
     if update_status["state"] == "error":
         status_rows.append(
             "! No se pudo consultar la red; se muestran datos guardados"
+        )
+    elif update_status["state"] == "partial":
+        status_rows.append(
+            "! Comprobación parcial; alguna fuente no respondió"
         )
     elif (
         not update_status["updates"]
@@ -1656,10 +1698,13 @@ def _render_main_dashboard(
                 [
                     f"Nombre: {environment_id}",
                     f"[D] Datos: {profile_path}",
+                    f"[H] Home: {home_path}",
                     f"[W] Workspace: {workspace_path}",
                     "[T] Temporales: "
                     f"{_format_bytes(temporary_usage.bytes)} · "
                     f"{temporary_usage.files} archivo(s) · {app.paths.temp}",
+                    f"[CC] Custom Commands: {custom_commands_path} · "
+                    f"{custom_commands_display}",
                     f"[C] Catálogo Components: {component_source_count} "
                     "repositorio(s) externo(s)",
                     f"[P] Catálogo Pocketools: {pocketool_source_count} "
@@ -2756,14 +2801,24 @@ def _interactive_update_component(
         None,
     )
     if update is None:
-        message = (
-            "No se puede confirmar la actualización sin conexión."
-            if update_status["state"] == "error"
-            else f"{component.display_name} ya está actualizado."
+        component_error = update_status.get("errors", {}).get(
+            str(selected["id"])
+        )
+        rows = (
+            [
+                "No se pudo comprobar esta actualización:",
+                str(component_error),
+                "Pulse Intro o Esc para volver.",
+            ]
+            if component_error
+            else [
+                f"{component.display_name} ya está actualizado.",
+                "Pulse Intro o Esc para volver.",
+            ]
         )
         _print_panel(
             f"Actualizar {component.display_name}",
-            [("", [message, "Pulse Intro o Esc para volver."])],
+            [("", rows)],
         )
         _read_input("> ")
         return update_status
@@ -3074,12 +3129,15 @@ def _interactive_component_information(
             continue
         item, target, path_type = paths[int(option) - 1]
         _open_component_information_path(
-            str(item["displayName"]), target, path_type
+            app, str(item["displayName"]), target, path_type
         )
 
 
 def _open_component_information_path(
-    display_name: str, target: Path, path_type: str
+    app: EapApplication,
+    display_name: str,
+    target: Path,
+    path_type: str,
 ) -> None:
     windows_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     if path_type == "directory":
@@ -3096,7 +3154,7 @@ def _open_component_information_path(
                 f"La ruta declarada como archivo es una carpeta: {target}"
             )
         target.parent.mkdir(parents=True, exist_ok=True)
-        executable = windows_root / "System32" / "notepad.exe"
+        executable = _text_viewer_executable(app)
         opened_message = "Archivo abierto"
     else:
         raise ValidationError(
@@ -3114,6 +3172,39 @@ def _open_component_information_path(
         ) from exc
     print(f"{opened_message}: {target}")
     _pause_after_result()
+
+
+def _text_viewer_executable(app: EapApplication) -> Path:
+    configured = Settings.load(app.paths.config).get(
+        "textViewer.executable"
+    ).strip().strip('"')
+    if not configured:
+        raise ValidationError(
+            "textViewer.executable no puede estar vacío"
+        )
+    expanded = os.path.expandvars(configured)
+    candidate = Path(expanded).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    elif candidate.parent != Path("."):
+        resolved = (app.paths.root / candidate).resolve()
+    elif candidate.name.casefold() == "notepad.exe":
+        windows_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        resolved = windows_root / "System32" / "notepad.exe"
+    else:
+        located = shutil.which(expanded)
+        if located is None:
+            raise ValidationError(
+                "No se encuentra el visor de texto configurado en "
+                f"textViewer.executable: {configured}"
+            )
+        resolved = Path(located).resolve()
+    if not resolved.is_file():
+        raise ValidationError(
+            "No se encuentra el visor de texto configurado en "
+            f"textViewer.executable: {resolved}"
+        )
+    return resolved
 
 
 def _track_display(component: Any, track_id: int | str) -> str:
@@ -3251,7 +3342,7 @@ def _style(text: str, color: str, stream: Any | None = None) -> str:
 def _colorize_panel_row(row: str, content: str) -> str:
     if not _COLOR_ENABLED or not _stream_is_terminal(sys.stdout):
         return row
-    marker_pattern = re.compile(r"\[(?:\d+i?|[A-Z]|Esc)\]")
+    marker_pattern = re.compile(r"\[(?:\d+i?|[A-Z]{1,2}|Esc)\]")
     if content.startswith("┌─"):
         colored = _style(row, _ANSI_CYAN)
         return marker_pattern.sub(
@@ -3272,6 +3363,14 @@ def _colorize_panel_row(row: str, content: str) -> str:
     colored = row
     for token, color in replacements:
         colored = colored.replace(token, _style(token, color))
+    profile_name = re.fullmatch(r"Nombre: (.+)", content)
+    if profile_name:
+        name = profile_name.group(1)
+        colored = colored.replace(
+            f"Nombre: {name}",
+            f"Nombre: {_style(name, _ANSI_GREEN)}",
+            1,
+        )
     return marker_pattern.sub(
         lambda match: _style(match.group(0), _ANSI_YELLOW),
         colored,
@@ -3678,16 +3777,24 @@ def _interactive_export_environment(
     include_configuration = _confirm(
         "¿Incluir config.properties privado (puede contener tokens)?"
     )
+    include_custom_commands = _confirm(
+        "¿Incluir custom-commands del profile?"
+    )
     result = app.export_environment(
         environment_id,
         name,
         include_components=include_components,
         include_configuration=include_configuration,
+        include_custom_commands=include_custom_commands,
     )
     print(f"Paquete de profile: {result.archive}")
     print(
         "Configuración privada incluida: "
         + ("sí" if result.configuration_included else "no")
+    )
+    print(
+        "Custom Commands incluidos: "
+        + ("sí" if result.custom_commands_included else "no")
     )
     print(f"SHA256: {result.sha256}")
     _pause_after_result()
@@ -3736,6 +3843,14 @@ def _interactive_import_environment(app: EapApplication) -> str | None:
     print(
         "Configuración privada importada: "
         + ("sí" if result.configuration_included else "no")
+    )
+    print(
+        "Custom Commands importados: "
+        + (
+            "sí"
+            if getattr(result, "custom_commands_included", False)
+            else "no"
+        )
     )
     try:
         _remove_imported_environment_package(app, archive)
@@ -4171,6 +4286,8 @@ def _interactive_advanced_options(
                         "[4] Limpiar temporales",
                         "[5] Integraciones con el Host",
                         "[6] Actualizar EAP",
+                        "[7] Abrir configuración general",
+                        "[8] Abrir configuración de un profile",
                         "[0] Exportar EAP",
                         "[Esc] Volver",
                     ],
@@ -4196,6 +4313,12 @@ def _interactive_advanced_options(
             if _interactive_update_eap(app):
                 return None
             continue
+        if option == "7":
+            _interactive_open_general_configuration(app)
+            continue
+        if option == "8":
+            _interactive_open_profile_configuration(app, current)
+            continue
         if option == "1":
             profiles = app.environments.list()
             if not profiles:
@@ -4215,6 +4338,7 @@ def _interactive_advanced_options(
                             "Nombre de cada paquete: <profile>.7z",
                             "Payloads: no incluidos",
                             "config.properties privado: no incluido",
+                            "custom-commands: no incluidos",
                         ],
                     )
                 ],
@@ -4261,6 +4385,47 @@ def _interactive_advanced_options(
             continue
         print("Opción no válida.")
         _pause_after_result()
+
+
+def _interactive_open_general_configuration(app: EapApplication) -> None:
+    _start_page("Inicio > Opciones avanzadas > Configuración general")
+    _open_component_information_path(
+        app,
+        "config.properties general",
+        app.paths.config,
+        "file",
+    )
+
+
+def _interactive_open_profile_configuration(
+    app: EapApplication, current: str
+) -> None:
+    profiles = app.environments.list()
+    _start_page("Inicio > Opciones avanzadas > Configuración de profile")
+    if not profiles:
+        print("No hay profiles configurados.")
+        _pause_after_result()
+        return
+    rows = [
+        f"[{index}] {profile}"
+        f"{' (actual)' if profile == current else ''}"
+        for index, profile in enumerate(profiles, start=1)
+    ]
+    rows.append("[Esc] Volver")
+    _print_panel(
+        "Abrir configuración de un profile",
+        [("Profiles", rows)],
+    )
+    selected_index = _read_index(len(profiles))
+    if selected_index is None:
+        return
+    selected = profiles[selected_index]
+    _open_component_information_path(
+        app,
+        f"config.properties de {selected}",
+        app.environments.ensure_config(selected),
+        "file",
+    )
 
 
 def _interactive_host_integrations(
@@ -4421,6 +4586,7 @@ def _export_all_profiles(
                 profile_id,
                 include_components=False,
                 include_configuration=False,
+                include_custom_commands=False,
             )
         except EapError as exc:
             failures.append((profile_id, str(exc)))

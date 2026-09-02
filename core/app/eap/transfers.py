@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -35,6 +36,7 @@ class ExportResult:
     workspace_id: str
     components_included: bool
     configuration_included: bool
+    custom_commands_included: bool
     size: int
     sha256: str
 
@@ -47,6 +49,7 @@ class ImportResult:
     components_copied: int
     components_missing: int
     configuration_included: bool
+    custom_commands_included: bool
 
 
 @dataclass(frozen=True)
@@ -80,12 +83,12 @@ class EnvironmentTransfer:
         exported_environment_id: str,
         include_components: bool,
         include_configuration: bool = False,
+        include_custom_commands: bool = False,
         force: bool = False,
     ) -> ExportResult:
         exported_environment_id = self._normalize_export_name(
             exported_environment_id
         )
-        source_desired = self.environments.read_desired(source_environment_id)
         source_lock = self.environments.read_lock(source_environment_id)
         if include_components:
             missing = self._missing_locked_paths(
@@ -128,12 +131,13 @@ class EnvironmentTransfer:
                     package_root / "envs" / exported_environment_id,
                     include_configuration,
                 )
-                exported_workspace = exported_environment_id
-                self._copy_workspace(
+                self._copy_custom_commands(
                     package_root,
-                    str(source_desired["workspace"]),
-                    exported_workspace,
+                    source_environment_id,
+                    exported_environment_id,
+                    include_custom_commands,
                 )
+                exported_workspace = exported_environment_id
                 package_manifest = {
                     "schemaVersion": 2,
                     "format": "eap-environment-package",
@@ -143,6 +147,7 @@ class EnvironmentTransfer:
                     "workspace": exported_workspace,
                     "componentsIncluded": include_components,
                     "configurationIncluded": include_configuration,
+                    "customCommandsIncluded": include_custom_commands,
                     "components": [
                         {
                             "id": str(item["id"]),
@@ -166,7 +171,11 @@ class EnvironmentTransfer:
                         for item in source_lock["components"]
                     ],
                     "excluded": [
-                        "data",
+                        (
+                            "data salvo custom-commands"
+                            if include_custom_commands
+                            else "data"
+                        ),
                         "temp",
                         "exports",
                         "EAP (eap.cmd y core)",
@@ -176,8 +185,13 @@ class EnvironmentTransfer:
                             if include_configuration
                             else ["config.properties privado del profile"]
                         ),
+                        *(
+                            []
+                            if include_custom_commands
+                            else ["custom-commands del profile"]
+                        ),
                         "otros profiles",
-                        "otros workspaces",
+                        "contenido de todos los workspaces",
                     ],
                 }
                 atomic_write_json(
@@ -217,6 +231,7 @@ class EnvironmentTransfer:
                     workspace_id=exported_workspace,
                     components_included=include_components,
                     configuration_included=include_configuration,
+                    custom_commands_included=include_custom_commands,
                     size=archive.stat().st_size,
                     sha256=sha256_file(archive),
                 )
@@ -372,29 +387,57 @@ class EnvironmentTransfer:
                         f"Ya existe el profile {environment_id}; "
                         "elija otro nombre al exportar"
                     )
+                custom_commands_included = bool(
+                    manifest.get("customCommandsIncluded", False)
+                )
+                source_custom_commands = (
+                    extraction_root
+                    / "data"
+                    / "profiles"
+                    / environment_id
+                    / "custom-commands"
+                )
+                target_custom_commands = (
+                    self.paths.data
+                    / "profiles"
+                    / environment_id
+                    / "custom-commands"
+                )
+                if custom_commands_included:
+                    if not source_custom_commands.is_dir():
+                        raise IntegrityError(
+                            "El paquete declara custom-commands, pero no "
+                            "contiene su carpeta"
+                        )
+                    if (
+                        target_custom_commands.exists()
+                        and not target_custom_commands.is_dir()
+                    ):
+                        raise ValidationError(
+                            "La ruta custom-commands de destino no es una "
+                            f"carpeta: {target_custom_commands}"
+                        )
+                    if (
+                        target_custom_commands.is_dir()
+                        and any(target_custom_commands.iterdir())
+                    ):
+                        raise ValidationError(
+                            "La carpeta custom-commands de destino no está "
+                            f"vacía: {target_custom_commands}"
+                        )
                 self._validate_imported_lock(lock)
-                source_workspace = extraction_root / "workspaces" / workspace_id
                 target_workspace = self.paths.workspaces / workspace_id
-                if target_workspace.exists() and any(target_workspace.iterdir()):
+                if target_workspace.exists() and not target_workspace.is_dir():
                     raise ValidationError(
-                        f"El workspace de destino no está vacío: {target_workspace}"
+                        "La ruta del workspace de destino no es una carpeta: "
+                        f"{target_workspace}"
                     )
                 components_copied = self._import_components(
                     extraction_root,
                     lock,
                     bool(manifest["componentsIncluded"]),
                 )
-                if source_workspace.is_dir():
-                    if target_workspace.exists():
-                        shutil.copytree(
-                            source_workspace,
-                            target_workspace,
-                            dirs_exist_ok=True,
-                        )
-                    else:
-                        shutil.copytree(source_workspace, target_workspace)
-                else:
-                    target_workspace.mkdir(parents=True, exist_ok=True)
+                target_workspace.mkdir(parents=True, exist_ok=True)
                 importing_environment = self.paths.envs / (
                     f".{environment_id}.import-{operation_id}"
                 )
@@ -402,6 +445,12 @@ class EnvironmentTransfer:
                 importing_environment.replace(target_environment)
                 self.environments.ensure_config(environment_id)
                 self.environments.ensure_profile(environment_id)
+                if custom_commands_included:
+                    shutil.copytree(
+                        source_custom_commands,
+                        target_custom_commands,
+                        dirs_exist_ok=True,
+                    )
                 self.environments.select(environment_id)
                 missing = self._missing_locked_paths(lock)
                 return ImportResult(
@@ -413,6 +462,7 @@ class EnvironmentTransfer:
                     configuration_included=bool(
                         manifest.get("configurationIncluded", False)
                     ),
+                    custom_commands_included=custom_commands_included,
                 )
             finally:
                 self._remove_staging(staging_root)
@@ -472,6 +522,28 @@ class EnvironmentTransfer:
                 destination,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
+
+    def _copy_custom_commands(
+        self,
+        package_root: Path,
+        source_environment_id: str,
+        exported_environment_id: str,
+        include_custom_commands: bool,
+    ) -> None:
+        if not include_custom_commands:
+            return
+        source = self.environments.custom_commands_path(
+            source_environment_id
+        )
+        target = (
+            package_root
+            / "data"
+            / "profiles"
+            / exported_environment_id
+            / "custom-commands"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
 
     def _copy_tool_components(
         self, package_root: Path, include_components: bool
@@ -585,20 +657,6 @@ class EnvironmentTransfer:
             encoding="utf-8",
             newline="\n",
         )
-
-    def _copy_workspace(
-        self,
-        package_root: Path,
-        source_workspace_id: str,
-        exported_workspace_id: str,
-    ) -> None:
-        source = self.paths.workspaces / source_workspace_id
-        target = package_root / "workspaces" / exported_workspace_id
-        target.parent.mkdir()
-        if source.is_dir():
-            shutil.copytree(source, target)
-        else:
-            target.mkdir()
 
     def _write_safe_config(
         self, package_root: Path, environment_id: str
@@ -887,6 +945,10 @@ class EnvironmentTransfer:
             manifest.get("schemaVersion") == 2
             and package_format == "eap-environment-package"
             and isinstance(manifest.get("configurationIncluded"), bool)
+            and (
+                "customCommandsIncluded" not in manifest
+                or isinstance(manifest.get("customCommandsIncluded"), bool)
+            )
         )
         legacy = (
             manifest.get("schemaVersion") == 1
@@ -919,7 +981,10 @@ class EnvironmentTransfer:
         delays = (0.1, 0.25, 0.5, 1.0, 2.0)
         for attempt, delay in enumerate(delays, start=1):
             try:
-                shutil.rmtree(resolved)
+                shutil.rmtree(
+                    resolved,
+                    onerror=self._clear_readonly_and_retry,
+                )
                 return
             except FileNotFoundError:
                 return
@@ -929,3 +994,16 @@ class EnvironmentTransfer:
                         f"Windows mantiene bloqueado el staging: {resolved}"
                     ) from exc
                 time.sleep(delay)
+
+    @staticmethod
+    def _clear_readonly_and_retry(
+        function: Callable[[str], Any],
+        path: str,
+        error_info: tuple[type[BaseException], BaseException, Any],
+    ) -> None:
+        error = error_info[1]
+        if not isinstance(error, PermissionError):
+            raise error
+        current_mode = os.stat(path, follow_symlinks=False).st_mode
+        os.chmod(path, current_mode | stat.S_IWRITE)
+        function(path)

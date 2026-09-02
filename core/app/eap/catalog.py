@@ -668,7 +668,8 @@ class Catalog:
                     )
                 if collection == "files":
                     if (
-                        entry.get("mode") != "if-missing"
+                        entry.get("mode")
+                        not in {"if-missing", "merge-properties"}
                         or not isinstance(entry.get("content"), str)
                         or len(entry["content"]) > 1024 * 1024
                     ):

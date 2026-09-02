@@ -8,6 +8,7 @@ from .errors import ValidationError
 DEFAULTS: dict[str, str] = {
     "profile.default": "default",
     "environment.default": "default",
+    "textViewer.executable": "notepad.exe",
     "network.timeoutSeconds": "20",
     "enable_proxy_authentication": "false",
     "proxy_authentication_type": "post",

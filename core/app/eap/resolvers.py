@@ -73,6 +73,10 @@ def resolve_component(
         return _resolve_github_release_asset(
             component, provider, track, client
         )
+    if resolver_type == "dbeaver-download-page":
+        return _resolve_dbeaver_download_page(
+            component, provider, track, client
+        )
     if resolver_type == "nodejs-index":
         return _resolve_nodejs(component, provider, track, client)
     if resolver_type == "python-install-manager-index":
@@ -296,7 +300,7 @@ def _resolve_github_release_asset(
                 raise ValidationError(
                     f"assetPattern de {component.id} no captura 'version'"
                 ) from exc
-            if _version_belongs_to_track(track, version):
+            if version_belongs_to_track(track, version):
                 candidates.append((version, asset, match))
     if not candidates:
         raise NetworkError(
@@ -341,6 +345,90 @@ def _resolve_github_release_asset(
         sha256=checksum if checksum_algorithm == "sha256" else None,
         sha512=checksum if checksum_algorithm == "sha512" else None,
         size=size,
+        metadata_url=metadata_url,
+    )
+
+
+def _resolve_dbeaver_download_page(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    metadata_url = str(resolver["downloadPageUrl"])
+    page = client.get_text(metadata_url)
+    versions = re.findall(
+        r'"title"\s*:\s*"DBeaver Community"\s*,\s*'
+        r'"version"\s*:\s*"(\d+\.\d+\.\d+)"',
+        page,
+        flags=re.IGNORECASE,
+    )
+    if not versions:
+        versions = re.findall(
+            r"Download\s+DBeaver\s+Community\s*"
+            r"(?:<[^>]+>\s*)*(\d+\.\d+\.\d+)",
+            page,
+            flags=re.IGNORECASE,
+        )
+    candidates = [
+        version
+        for version in versions
+        if version_belongs_to_track(track, version)
+    ]
+    if not candidates:
+        raise NetworkError(
+            f"DBeaver no publicó una versión estable para la línea {track}"
+        )
+    version = max(candidates, key=version_key)
+    template = str(
+        resolver.get(
+            "assetTemplate",
+            "dbeaver-ce-{version}-windows-x86_64.zip",
+        )
+    )
+    try:
+        file_name = template.format(version=version)
+    except (KeyError, ValueError) as exc:
+        raise ValidationError(
+            "assetTemplate inválido para DBeaver"
+        ) from exc
+    if PurePosixPath(file_name).name != file_name:
+        raise ValidationError(
+            "assetTemplate de DBeaver debe generar un nombre de archivo"
+        )
+    files_base_url = str(resolver["filesBaseUrl"]).rstrip("/")
+    url = f"{files_base_url}/{version}/{file_name}"
+    checksum_url = (
+        f"{files_base_url}/{version}/checksum/{file_name}.sha256"
+    )
+    checksum_response = client.get_text(checksum_url, maximum_bytes=4096)
+    checksum_match = re.search(r"\b([0-9a-fA-F]{64})\b", checksum_response)
+    if not checksum_match:
+        raise NetworkError(
+            f"DBeaver no proporcionó el SHA-256 de {file_name}"
+        )
+    checksum = checksum_match.group(1).lower()
+    _validate_artifact(
+        track,
+        version,
+        url,
+        file_name,
+        checksum,
+        "sha256",
+        client,
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=checksum,
+        size=None,
         metadata_url=metadata_url,
     )
 
@@ -541,7 +629,7 @@ def _resolve_jetbrains_product_release(
         if not isinstance(release, dict) or release.get("type") != "release":
             continue
         version = str(release.get("version", ""))
-        if _version_belongs_to_track(track, version):
+        if version_belongs_to_track(track, version):
             candidates.append((version, release))
     if not candidates:
         raise NetworkError(
@@ -656,7 +744,7 @@ def _validate_artifact(
     client: HttpClient,
 ) -> None:
     validate_version(version)
-    if not _version_belongs_to_track(track, version):
+    if not version_belongs_to_track(track, version):
         raise NetworkError(
             f"La versión resuelta {version!r} no pertenece a la línea {track}"
         )
@@ -671,7 +759,7 @@ def _validate_artifact(
         )
 
 
-def _version_belongs_to_track(track: int | str, version: str) -> bool:
+def version_belongs_to_track(track: int | str, version: str) -> bool:
     version_numbers = tuple(int(value) for value in re.findall(r"\d+", version))
     track_numbers = tuple(int(value) for value in re.findall(r"\d+", str(track)))
     return bool(
