@@ -103,6 +103,20 @@ def version_key(version: str) -> tuple[int, ...]:
     return numbers
 
 
+def version_belongs_to_track(track: int | str, version: str) -> bool:
+    version_numbers = tuple(
+        int(value) for value in re.findall(r"\d+", version)
+    )
+    track_numbers = tuple(
+        int(value) for value in re.findall(r"\d+", str(track))
+    )
+    return bool(
+        version_numbers
+        and track_numbers
+        and version_numbers[: len(track_numbers)] == track_numbers
+    )
+
+
 def java_version_key(version: str, provider: str) -> tuple[int, ...]:
     numbers = [int(value) for value in re.findall(r"\d+", version)]
     if not numbers:

@@ -9,7 +9,7 @@ from typing import Any
 from .catalog import ComponentDefinition
 from .errors import NetworkError, ValidationError
 from .network import HttpClient
-from .util import validate_version, version_key
+from .util import validate_version, version_belongs_to_track, version_key
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _SHA512 = re.compile(r"^[0-9a-fA-F]{128}$")
@@ -757,13 +757,3 @@ def _validate_artifact(
         raise NetworkError(
             f"La fuente no proporcionó un {checksum_algorithm.upper()} válido"
         )
-
-
-def version_belongs_to_track(track: int | str, version: str) -> bool:
-    version_numbers = tuple(int(value) for value in re.findall(r"\d+", version))
-    track_numbers = tuple(int(value) for value in re.findall(r"\d+", str(track)))
-    return bool(
-        version_numbers
-        and track_numbers
-        and version_numbers[: len(track_numbers)] == track_numbers
-    )

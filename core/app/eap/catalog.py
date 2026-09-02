@@ -7,7 +7,12 @@ from typing import Any
 
 from .errors import ValidationError
 from .paths import EapPaths
-from .util import load_json, require_fields, validate_id
+from .util import (
+    load_json,
+    require_fields,
+    validate_id,
+    version_belongs_to_track,
+)
 
 
 PROFILE_ENVIRONMENT_VARIABLES = {
@@ -230,6 +235,29 @@ class ComponentDefinition:
         raise ValidationError(
             f"Línea {track} no soportada para {self.id}; disponibles: {choices}"
         )
+
+    def compatible_track(
+        self, locked_track: int | str, current_version: str
+    ) -> int | str:
+        try:
+            return self.validate_track(locked_track)
+        except ValidationError as original_error:
+            candidates = [
+                item["id"]
+                for item in self.tracks
+                if version_belongs_to_track(item["id"], current_version)
+            ]
+            default_track = self.value["defaultTrack"]
+            if default_track in candidates:
+                return default_track
+            if candidates:
+                return max(
+                    candidates,
+                    key=lambda value: len(
+                        tuple(re.findall(r"\d+", str(value)))
+                    ),
+                )
+            raise original_error
 
 
 @dataclass(frozen=True)

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -51,11 +50,7 @@ from .releases import (
     EapUpdateStatus,
     GitHubApiClient,
 )
-from .resolvers import (
-    ResolvedArtifact,
-    resolve_component,
-    version_belongs_to_track,
-)
+from .resolvers import ResolvedArtifact, resolve_component
 from .shortcuts import ShortcutResult, WindowsShortcutManager
 from .terminal import ManagedTerminal, TerminalLaunch
 from .transfers import (
@@ -905,8 +900,8 @@ class EapApplication:
             raise ValidationError("Un componente externo no es un payload")
         provider_id = str(marker.get("provider", ""))
         provider = component.provider(provider_id)
-        track = component.validate_track(marker.get("track"))
         version = validate_version(str(marker.get("version", "")))
+        track = component.compatible_track(marker.get("track"), version)
         install_path = marker_path.parent.resolve()
         if marker_path.parent.is_symlink():
             raise ValidationError("El payload no puede ser un enlace")
@@ -1069,6 +1064,7 @@ class EapApplication:
         checksum: str,
         install_path: Path,
     ) -> ResolvedArtifact | None:
+        component = self.catalog.component(component_id)
         for environment_id in self.environments.list():
             for item in self.environments.read_lock(environment_id)[
                 "components"
@@ -1076,12 +1072,16 @@ class EapApplication:
                 if (
                     item.get("id") != component_id
                     or item.get("provider") != provider
-                    or str(item.get("track")) != str(track)
                     or str(item.get("version")) != version
                     or not isinstance(item.get("installPath"), str)
                 ):
                     continue
                 try:
+                    locked_track = component.compatible_track(
+                        item.get("track"), version
+                    )
+                    if str(locked_track) != str(track):
+                        continue
                     locked_path = self.paths.require_within_root(
                         self.paths.root / str(item["installPath"])
                     )
@@ -1092,7 +1092,7 @@ class EapApplication:
                     locked_path == install_path
                     and artifact.checksum.casefold() == checksum
                 ):
-                    return artifact
+                    return replace(artifact, track=track)
         return None
 
     def _remember_payload_source(self, item: dict[str, Any]) -> None:
@@ -1353,28 +1353,7 @@ class EapApplication:
         locked_track: int | str,
         current_version: str,
     ) -> int | str:
-        try:
-            return component.validate_track(locked_track)
-        except ValidationError as original_error:
-            candidates = [
-                item["id"]
-                for item in component.tracks
-                if version_belongs_to_track(item["id"], current_version)
-            ]
-            default_track = component.value["defaultTrack"]
-            if default_track in candidates:
-                return default_track
-            if candidates:
-                return max(
-                    candidates,
-                    key=lambda value: len(
-                        tuple(
-                            int(number)
-                            for number in re.findall(r"\d+", str(value))
-                        )
-                    ),
-                )
-            raise original_error
+        return component.compatible_track(locked_track, current_version)
 
     def update(
         self, environment_id: str, component_id: str

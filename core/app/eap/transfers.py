@@ -694,7 +694,9 @@ class EnvironmentTransfer:
             component_id = str(item.get("id", ""))
             component = self.catalog.component(component_id)
             component.provider(str(item.get("provider", "")))
-            component.validate_track(item.get("track"))
+            component.compatible_track(
+                item.get("track"), str(item.get("version", ""))
+            )
             if component.is_external:
                 installation = item.get("installation")
                 executable = (

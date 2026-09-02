@@ -1771,7 +1771,7 @@ def _inventory_sections(
                     item.get("repository")
                     or _component_repository_id(component, item)
                 ),
-                _component_update_version(component.id, update_status),
+                _component_update_version(component, update_status),
                 "Sí" if item.get("active", True) else "No",
                 f"[{index}i]" if numbered else "",
             ]
@@ -1829,19 +1829,28 @@ def _component_table_rows(rows: list[list[str]]) -> list[str]:
 
 
 def _component_update_version(
-    component_id: str, update_status: dict[str, Any]
+    component: Any, update_status: dict[str, Any]
 ) -> str:
+    if component.is_external:
+        return "--"
     for update in update_status.get("updates", []):
         if (
             not isinstance(update, dict)
-            or str(update.get("family")) != component_id
+            or str(update.get("family")) != component.id
         ):
             continue
         latest = update.get("latestVersion")
         if latest is None and isinstance(update.get("artifact"), dict):
             latest = update["artifact"].get("version")
-        return str(latest) if latest else ""
-    return ""
+        return str(latest) if latest else "Sí"
+    errors = update_status.get("errors", {})
+    if isinstance(errors, dict) and component.id in errors:
+        return "?"
+    if update_status.get("state") in {"done", "partial"}:
+        return "No"
+    if update_status.get("checked"):
+        return "No"
+    return "?"
 
 
 def _ordered_inventory(

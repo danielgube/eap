@@ -572,10 +572,10 @@ def dbeaver_component(manifest_path: Path) -> ComponentDefinition:
         ],
         "capability": {"id": "app.database-client", "exclusive": False},
         "tracks": [
-            {"id": "26.1", "displayName": "DBeaver 26.1 estable"}
+            {"id": 26, "displayName": "DBeaver 26.x estable"}
         ],
         "defaultProvider": "community",
-        "defaultTrack": "26.1",
+        "defaultTrack": 26,
         "updatePolicy": "same-track",
         "providers": [
             {
@@ -790,6 +790,18 @@ def external_component(manifest_path: Path) -> ComponentDefinition:
 
 
 class ComponentInfoTests(unittest.TestCase):
+    def test_obsolete_track_is_mapped_only_to_a_compatible_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = dbeaver_component(
+                Path(temporary) / "dbeaver.json"
+            )
+
+            self.assertEqual(
+                26, component.compatible_track("26.1", "26.1.5")
+            )
+            with self.assertRaisesRegex(ValidationError, "no soportada"):
+                component.compatible_track("25.3", "25.3.5")
+
     def test_component_info_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "dbeaver.json"
@@ -2246,7 +2258,7 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual("python-3.14.7-amd64.zip", artifact.file_name)
             self.assertEqual("d" * 64, artifact.sha256)
 
-    def test_resolves_latest_dbeaver_correction_in_selected_line(self) -> None:
+    def test_resolves_latest_dbeaver_release_in_selected_major(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             component = dbeaver_component(
                 Path(temporary) / "dbeaver.json"
@@ -2298,22 +2310,18 @@ class ResolverTests(unittest.TestCase):
             artifact = resolve_component(
                 component,
                 "community",
-                "26.1",
+                26,
                 FakeHttpClient(response),
             )
-            self.assertEqual("26.1.5", artifact.version)
-            self.assertEqual("c" * 64, artifact.sha256)
-            self.assertEqual(250, artifact.size)
+            self.assertEqual("26.2.0", artifact.version)
+            self.assertEqual("a" * 64, artifact.sha256)
+            self.assertEqual(300, artifact.size)
 
     def test_resolves_dbeaver_from_official_download_page(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             component = dbeaver_component(
                 Path(temporary) / "dbeaver.json"
             )
-            component.value["tracks"] = [
-                {"id": 26, "displayName": "DBeaver 26.x estable"}
-            ]
-            component.value["defaultTrack"] = 26
             component.value["providers"][0]["resolver"] = {
                 "type": "dbeaver-download-page",
                 "downloadPageUrl": "https://dbeaver.example/download/",
@@ -3603,10 +3611,6 @@ class ComponentLifecycleTests(unittest.TestCase):
             paths = EapPaths.from_root(Path(temporary))
             paths.ensure_layout()
             dbeaver = dbeaver_component(paths.temp / "dbeaver.json")
-            dbeaver.value["tracks"] = [
-                {"id": 26, "displayName": "DBeaver 26.x estable"}
-            ]
-            dbeaver.value["defaultTrack"] = 26
             maven = maven_component(paths.temp / "maven.json")
             catalog = Catalog(
                 paths, {}, {"dbeaver": dbeaver, "maven": maven}
@@ -3745,16 +3749,23 @@ class ComponentLifecycleTests(unittest.TestCase):
                 app.inventory("default")[0]["artifact"]["url"],
             )
 
-    def test_legacy_payload_without_source_can_still_be_activated(self) -> None:
+    def test_legacy_payload_with_obsolete_track_can_still_be_activated(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = EapPaths.from_root(Path(temporary))
             paths.ensure_layout()
-            component = java_component(paths.components / "java.json")
-            catalog = Catalog(paths, {}, {"java": component})
+            component = dbeaver_component(
+                paths.components / "dbeaver.json"
+            )
+            catalog = Catalog(paths, {}, {"dbeaver": component})
             store = EnvironmentStore(paths)
             store.create("default")
             install_path = (
-                paths.components / "java" / "temurin" / "21.0.12+8"
+                paths.components
+                / "dbeaver"
+                / "community"
+                / "26.1.5"
             )
             for relative in component.value["install"]["requiredFiles"]:
                 required = install_path / relative
@@ -3764,10 +3775,10 @@ class ComponentLifecycleTests(unittest.TestCase):
                 install_path / ".eap-install.json",
                 {
                     "schemaVersion": 1,
-                    "component": "java",
-                    "provider": "temurin",
-                    "track": 21,
-                    "version": "21.0.12+8",
+                    "component": "dbeaver",
+                    "provider": "community",
+                    "track": "26.1",
+                    "version": "26.1.5",
                     "checksumAlgorithm": "sha256",
                     "artifactChecksum": "a" * 64,
                     "status": "ready",
@@ -3781,10 +3792,12 @@ class ComponentLifecycleTests(unittest.TestCase):
 
             [payload] = app.available_component_payloads("default")
             self.assertFalse(payload.restorable)
+            self.assertEqual(26, payload.track)
             app.activate_component_payload("default", payload)
 
             locked = app.inventory("default")[0]
             self.assertTrue(locked["artifact"]["localOnly"])
+            self.assertEqual(26, locked["track"])
 
     def test_declared_dependencies_are_informational(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -5855,7 +5868,9 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("Active", rendered)
             self.assertIn("danielgube", rendered)
             self.assertIn("Java JDK · 21.0.12+8", rendered)
-            self.assertRegex(rendered, r"danielgube\s+\sNo\s+\[1i\]")
+            self.assertRegex(
+                rendered, r"danielgube\s+\?\s+No\s+\[1i\]"
+            )
 
     def test_inactive_table_entry_can_activate_its_local_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -7694,6 +7709,62 @@ class InterfaceTests(unittest.TestCase):
             self.assertNotIn(
                 "┌─ Integraciones con el Host",
                 without_integrations.getvalue(),
+            )
+
+    def test_component_update_column_distinguishes_all_states(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            managed = java_component(root / "java.json")
+            external = external_component(root / "kiro.json")
+
+            self.assertEqual(
+                "21.0.13+9",
+                cli_module._component_update_version(
+                    managed,
+                    {
+                        "state": "done",
+                        "updates": [
+                            {
+                                "family": "java",
+                                "latestVersion": "21.0.13+9",
+                            }
+                        ],
+                    },
+                ),
+            )
+            self.assertEqual(
+                "No",
+                cli_module._component_update_version(
+                    managed, {"state": "done", "updates": []}
+                ),
+            )
+            self.assertEqual(
+                "--",
+                cli_module._component_update_version(
+                    external, {"state": "done", "updates": []}
+                ),
+            )
+            self.assertEqual(
+                "?",
+                cli_module._component_update_version(
+                    managed,
+                    {
+                        "state": "partial",
+                        "updates": [],
+                        "errors": {"java": "sin conexión"},
+                    },
+                ),
+            )
+            self.assertEqual(
+                "?",
+                cli_module._component_update_version(
+                    managed,
+                    {
+                        "state": "cached",
+                        "updates": [],
+                        "checked": False,
+                    },
+                ),
             )
 
 
