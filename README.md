@@ -116,6 +116,11 @@ git clone https://github.com/danielgube/eap.git C:\eap
 C:\eap\eap.cmd
 ```
 
+![Accesos directos de aplicaciones y profiles gestionados por EAP](docs/images/shorcuts.png)
+
+*Accesos directos generados por EAP para abrir cada aplicación directamente en
+el profile elegido.*
+
 ## También es una CLI
 
 La interfaz está pensada para descubrir y gestionar el entorno; la CLI permite

@@ -1502,6 +1502,7 @@ class EapReleaseTests(unittest.TestCase):
                 ".gitignore": "/data/\n/temp/\n/exports/\n",
                 "README.md": "EAP\n",
                 "config.properties.example": "profile.default=default\n",
+                "docs/images/catalogo-components.png": "PNG de prueba\n",
                 "eap.cmd": "@echo off\r\n",
                 "core/app/eap/__init__.py": f'__version__ = "{version}"\n',
                 "core/bootstrap.ps1": "# bootstrap\n",
@@ -1539,8 +1540,42 @@ class EapReleaseTests(unittest.TestCase):
             subprocess.run(
                 ["git", "tag", f"v{version}"], cwd=root, check=True
             )
+            tagged_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self._write(root / "post-release.txt", "cambio posterior\n")
+            subprocess.run(
+                ["git", "add", "post-release.txt"], cwd=root, check=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=EAP Test",
+                    "-c",
+                    "user.email=eap@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "cambio posterior a la release",
+                ],
+                cwd=root,
+                check=True,
+            )
             publisher = EapReleasePublisher(paths, 10, "EAP/Test")
             repository = GitRepository(root)
+            current_head = repository.run("rev-parse", "HEAD")
+
+            self.assertEqual(
+                tagged_head,
+                publisher._tagged_release_commit(
+                    repository, f"v{version}", current_head
+                ),
+            )
 
             archive = publisher._build_archive(
                 repository, f"v{version}", version
@@ -1553,7 +1588,14 @@ class EapReleaseTests(unittest.TestCase):
             self.assertEqual(first_digest, sha256_file(archive))
             with zipfile.ZipFile(archive) as package:
                 names = {item.filename for item in package.infolist()}
-            self.assertEqual(set(files) - {".gitignore"}, names)
+            self.assertEqual(
+                set(files)
+                - {
+                    ".gitignore",
+                    "docs/images/catalogo-components.png",
+                },
+                names,
+            )
 
 
 @unittest.skipUnless(

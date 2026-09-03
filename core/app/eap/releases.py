@@ -54,6 +54,10 @@ _REQUIRED_MANAGED_PATHS = {
     "core/release.json",
     "core/version.json",
 }
+_RELEASE_EXCLUDED_PATHS = (
+    PurePosixPath(".gitignore"),
+    PurePosixPath("docs/images"),
+)
 
 
 def parse_semver(value: str) -> tuple[int, int, int]:
@@ -964,6 +968,15 @@ class EapReleasePublisher:
                     "core/app/eap/__init__.py",
                 )
             raise
+        if not version_changed:
+            tagged_head = self._tagged_release_commit(
+                repository, target_tag, head
+            )
+            if tagged_head is not None:
+                self.status(
+                    f"Reanudando la release {target_tag} desde su tag..."
+                )
+                head = tagged_head
         self._ensure_tag(repository, target_tag, head)
         archive = self._build_archive(repository, target_tag, target_version)
         digest = sha256_file(archive)
@@ -1029,6 +1042,27 @@ class EapReleasePublisher:
         return True
 
     @staticmethod
+    def _tagged_release_commit(
+        repository: GitRepository,
+        tag: str,
+        current_head: str,
+    ) -> str | None:
+        code, output, _ = repository.run_optional(
+            "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"
+        )
+        if code != 0:
+            return None
+        tagged_head = output.strip()
+        ancestor_code, _, _ = repository.run_optional(
+            "merge-base", "--is-ancestor", tagged_head, current_head
+        )
+        if ancestor_code != 0:
+            raise ValidationError(
+                f"El tag existente {tag} no pertenece al main actual"
+            )
+        return tagged_head
+
+    @staticmethod
     def _ensure_tag(
         repository: GitRepository, tag: str, expected_commit: str
     ) -> None:
@@ -1082,7 +1116,7 @@ class EapReleasePublisher:
             ) as target:
                 for entry in source.infolist():
                     relative = _safe_archive_path(entry.filename)
-                    if relative.as_posix() == ".gitignore":
+                    if _is_release_excluded_path(relative):
                         continue
                     if entry.is_dir():
                         continue
@@ -1098,7 +1132,8 @@ class EapReleasePublisher:
                 for line in repository.run(
                     "ls-tree", "-r", "--name-only", tag
                 ).splitlines()
-                if line and line != ".gitignore"
+                if line
+                and not _is_release_excluded_path(_safe_archive_path(line))
             }
             if names != expected:
                 raise IntegrityError(
@@ -1201,3 +1236,10 @@ def _safe_archive_path(value: str) -> PurePosixPath:
 
 def _contains_path(root: PurePosixPath, candidate: PurePosixPath) -> bool:
     return candidate == root or root in candidate.parents
+
+
+def _is_release_excluded_path(path: PurePosixPath) -> bool:
+    return any(
+        _contains_path(excluded, path)
+        for excluded in _RELEASE_EXCLUDED_PATHS
+    )
