@@ -14,12 +14,10 @@
   <a href="https://github.com/danielgube/eap/stargazers"><img alt="Estrellas en GitHub" src="https://img.shields.io/github/stars/danielgube/eap?style=for-the-badge&logo=github"></a>
 </p>
 
-> [!NOTE]
-> **Placeholder — GIF 01: “De cero a entorno listo” (2–3 s)**
->
-> Empezar en una consola limpia, ejecutar `eap.cmd`, mostrar cómo se abre la Windows Terminal portable con el dashboard de EAP y terminar creando una pestaña CMD ya activada con el botón `+`. Que se vean el profile seleccionado y varios componentes activos.
->
-> Archivo sugerido: `docs/assets/eap-overview.gif`.
+![Dashboard de EAP con el profile activo y sus componentes](docs/images/dasboard.png)
+
+*Dashboard del profile activo: componentes, integraciones y accesos directos a
+sus datos, home y workspace.*
 
 ## Una carpeta. Cualquier proyecto. El entorno exacto.
 
@@ -58,12 +56,10 @@ global de Windows permanecen intactos.
 | Duplicar instalaciones para separar proyectos | Payloads inmutables compartidos entre profiles |
 | Documentar el onboarding en veinte pasos | Compartir una distribución o un paquete de profile |
 
-> [!NOTE]
-> **Placeholder — GIF 02: “Instalar un Component” (2–3 s)**
->
-> Desde el dashboard, entrar en `Catálogo > Instalar componente`, pulsar `[F]` para actualizar los repositorios y mostrar cómo aparece la lista. Elegir un Component y cerrar con el dashboard enseñándolo como activo. Usar cortes rápidos; no mostrar una descarga larga.
->
-> Archivo sugerido: `docs/assets/eap-components.gif`.
+![Catálogo de Components agrupado por categoría](docs/images/catalogo-components.png)
+
+*Catálogo navegable con categoría, estado, versión, descripción y repositorio de
+cada Component.*
 
 ## Multirrepositorio de verdad
 
@@ -93,12 +89,10 @@ Los catálogos iniciales viven en
 [eap-components](https://github.com/danielgube/eap-components) y
 [eap-pocketools](https://github.com/danielgube/eap-pocketools).
 
-> [!NOTE]
-> **Placeholder — GIF 03: “Descubrir una Pocketool” (2–3 s)**
->
-> Abrir `Pocketools > Explorar e instalar`, recorrer la lista y escribir `[1i]` para que el navegador predeterminado muestre su `README.md`. Volver a EAP y dejar seleccionada la acción de instalación.
->
-> Archivo sugerido: `docs/assets/eap-pocketools.gif`.
+![Detalle de un Component y acceso a sus rutas importantes](docs/images/detalle-component.png)
+
+*Información y rutas importantes de cada Component, accesibles directamente
+desde EAP.*
 
 ## Empieza en tres pasos
 
