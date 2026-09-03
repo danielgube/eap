@@ -117,7 +117,12 @@ def version_belongs_to_track(track: int | str, version: str) -> bool:
     )
 
 
-def java_version_key(version: str, provider: str) -> tuple[int, ...]:
+def java_version_key(
+    version: str, provider: str | None = None
+) -> tuple[int, ...]:
+    # El argumento provider se conserva por compatibilidad con consumidores
+    # anteriores; el formato se selecciona ahora desde el manifiesto.
+    del provider
     numbers = [int(value) for value in re.findall(r"\d+", version)]
     if not numbers:
         raise ValidationError(f"Versión Java no comparable: {version}")
@@ -127,8 +132,6 @@ def java_version_key(version: str, provider: str) -> tuple[int, ...]:
         build = [int(value) for value in re.findall(r"\d+", build_text)]
         release.extend([0] * max(0, 4 - len(release)))
         return tuple([*release[:4], *build])
-    if provider == "corretto" and len(numbers) >= 4:
-        return tuple([*numbers[:3], 0, *numbers[3:]])
     return tuple(numbers)
 
 
@@ -137,8 +140,9 @@ def component_version_key(
     version: str,
     provider: str,
 ) -> tuple[int, ...]:
-    if component_id == "java":
-        return java_version_key(version, provider)
+    # Firma conservada para consumidores anteriores. La selección de esquemas
+    # pertenece ahora al manifiesto y se aplica en ComponentDefinition.
+    del component_id, provider
     return version_key(version)
 
 

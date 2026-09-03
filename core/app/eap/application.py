@@ -61,7 +61,6 @@ from .transfers import (
 )
 from .util import (
     atomic_write_json,
-    component_version_key,
     load_json,
     sha256_file,
     utc_now,
@@ -824,11 +823,9 @@ class EapApplication:
             key=lambda payload: (
                 payload.display_name.casefold(),
                 payload.provider_name.casefold(),
-                component_version_key(
-                    payload.component_id,
-                    payload.version,
-                    payload.provider,
-                ),
+                self.catalog.component(
+                    payload.component_id
+                ).comparable_version_key(payload.version),
             ),
         )
 
@@ -1343,14 +1340,14 @@ class EapApplication:
         )
         if major_track is not None:
             major_candidate = self.resolve(family, provider, major_track)
-            if component_version_key(
-                family, major_candidate.version, provider
-            ) > component_version_key(family, latest.version, provider):
+            if component.comparable_version_key(
+                major_candidate.version
+            ) > component.comparable_version_key(latest.version):
                 latest = major_candidate
                 track = major_track
-        if component_version_key(
-            family, latest.version, provider
-        ) <= component_version_key(family, current_version, provider):
+        if component.comparable_version_key(
+            latest.version
+        ) <= component.comparable_version_key(current_version):
             return None
         major_update = (
             version_key(latest.version)[0]

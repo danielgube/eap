@@ -63,6 +63,8 @@ def resolve_component(
     provider = component.provider(provider_id)
     resolver = provider["resolver"]
     resolver_type = resolver.get("type")
+    if resolver_type == "json-index":
+        return _resolve_json_index(component, provider, track, client)
     if resolver_type == "adoptium-v3":
         return _resolve_adoptium(component, provider, track, client)
     if resolver_type == "corretto-index":
@@ -98,6 +100,275 @@ def resolve_component(
             component, provider, track, client
         )
     raise ValidationError(f"Resolver no soportado: {resolver_type!r}")
+
+
+def _resolve_json_index(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    metadata_url = _render_json_resolver_template(
+        str(resolver["indexUrl"]), track=track
+    )
+    response = client.get_json(metadata_url)
+    releases_declaration = resolver["releases"]
+    artifacts_declaration = resolver["artifacts"]
+    releases = _json_resolver_collection(
+        response,
+        str(releases_declaration["path"]),
+        track,
+    )
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for release in releases:
+        if not isinstance(release, dict) or not _json_resolver_matches(
+            release,
+            releases_declaration.get("filters", {}),
+            track,
+        ):
+            continue
+        raw_version = _json_resolver_scalar(
+            release,
+            str(releases_declaration["versionPath"]),
+            track,
+            "versión",
+        )
+        version = str(raw_version)
+        if len(version) > 256:
+            continue
+        pattern_text = releases_declaration.get("versionPattern")
+        if pattern_text is not None:
+            try:
+                match = re.fullmatch(str(pattern_text), version)
+            except re.error as exc:
+                raise ValidationError(
+                    "versionPattern no es una expresión regular válida"
+                ) from exc
+            if match is None:
+                continue
+            version = str(match.group("version"))
+        if version_belongs_to_track(track, version):
+            candidates.append((version, release))
+    if not candidates:
+        raise NetworkError(
+            f"El índice JSON no publicó un artefacto para "
+            f"{component.display_name} en la línea {track}"
+        )
+    version, release = max(
+        candidates,
+        key=lambda item: component.comparable_version_key(item[0]),
+    )
+    artifacts = [
+        artifact
+        for artifact in _json_resolver_collection(
+            release,
+            str(artifacts_declaration["path"]),
+            track,
+        )
+        if isinstance(artifact, dict)
+        and _json_resolver_matches(
+            artifact,
+            artifacts_declaration.get("filters", {}),
+            track,
+        )
+    ]
+    if not artifacts:
+        raise NetworkError(
+            f"El índice JSON no publicó el ZIP requerido para "
+            f"{component.display_name} {version}"
+        )
+    selection = str(artifacts_declaration.get("selection", "only"))
+    if selection not in {"only", "first", "last"}:
+        raise ValidationError(
+            f"Selección no soportada en el resolver JSON: {selection!r}"
+        )
+    if len(artifacts) > 1 and selection == "only":
+        raise NetworkError(
+            f"El índice JSON devolvió varios ZIP para "
+            f"{component.display_name} {version}; el selector es ambiguo"
+        )
+    artifact = artifacts[-1] if selection == "last" else artifacts[0]
+
+    file_name_path = artifacts_declaration.get("fileNamePath")
+    file_name = (
+        str(
+            _json_resolver_scalar(
+                artifact,
+                str(file_name_path),
+                track,
+                "nombre de archivo",
+            )
+        )
+        if file_name_path is not None
+        else ""
+    )
+    url_path = artifacts_declaration.get("urlPath")
+    if url_path is not None:
+        url = str(
+            _json_resolver_scalar(
+                artifact, str(url_path), track, "URL"
+            )
+        )
+    else:
+        url = _render_json_resolver_template(
+            str(artifacts_declaration["urlTemplate"]),
+            track=track,
+            version=version,
+            file_name=file_name,
+        )
+    if not file_name:
+        file_name = PurePosixPath(urllib.parse.urlparse(url).path).name
+
+    sha256_path = artifacts_declaration.get("sha256Path")
+    sha512_path = artifacts_declaration.get("sha512Path")
+    checksum_algorithm = "sha256" if sha256_path is not None else "sha512"
+    checksum_path = sha256_path if sha256_path is not None else sha512_path
+    checksum = str(
+        _json_resolver_scalar(
+            artifact,
+            str(checksum_path),
+            track,
+            checksum_algorithm.upper(),
+        )
+    ).lower()
+    size_path = artifacts_declaration.get("sizePath")
+    size: int | None = None
+    if size_path is not None:
+        raw_size = _json_resolver_scalar(
+            artifact, str(size_path), track, "tamaño"
+        )
+        if (
+            not isinstance(raw_size, int)
+            or isinstance(raw_size, bool)
+            or raw_size <= 0
+        ):
+            raise NetworkError(
+                f"El índice JSON no proporcionó un tamaño válido para "
+                f"{file_name}"
+            )
+        size = raw_size
+    _validate_artifact(
+        track,
+        version,
+        url,
+        file_name,
+        checksum,
+        checksum_algorithm,
+        client,
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=checksum if checksum_algorithm == "sha256" else None,
+        sha512=checksum if checksum_algorithm == "sha512" else None,
+        size=size,
+        metadata_url=metadata_url,
+    )
+
+
+def _json_resolver_collection(
+    value: Any, path: str, track: int | str
+) -> list[Any]:
+    matches = _json_resolver_values(value, path, track)
+    if len(matches) == 1 and isinstance(matches[0], list):
+        return list(matches[0])
+    return matches
+
+
+def _json_resolver_scalar(
+    value: Any,
+    path: str,
+    track: int | str,
+    label: str,
+) -> Any:
+    matches = _json_resolver_values(value, path, track)
+    if len(matches) != 1 or isinstance(matches[0], (dict, list)):
+        raise NetworkError(
+            f"El índice JSON no proporcionó un valor único para {label}"
+        )
+    return matches[0]
+
+
+def _json_resolver_values(
+    value: Any, path: str, track: int | str
+) -> list[Any]:
+    rendered_path = _render_json_resolver_template(path, track=track)
+    if rendered_path in {"", "/"}:
+        return [value]
+    if not rendered_path.startswith("/"):
+        raise ValidationError(
+            f"Ruta JSON no válida; debe comenzar por '/': {path!r}"
+        )
+    current = [value]
+    for encoded_segment in rendered_path[1:].split("/"):
+        segment = encoded_segment.replace("~1", "/").replace("~0", "~")
+        following: list[Any] = []
+        for candidate in current:
+            if isinstance(candidate, dict):
+                if "*" in segment:
+                    expression = re.compile(
+                        "^" + re.escape(segment).replace(r"\*", ".*") + "$"
+                    )
+                    following.extend(
+                        candidate[key]
+                        for key in sorted(candidate)
+                        if expression.fullmatch(str(key))
+                    )
+                elif segment in candidate:
+                    following.append(candidate[segment])
+            elif isinstance(candidate, list):
+                if segment == "*":
+                    following.extend(candidate)
+                elif segment.isdigit() and int(segment) < len(candidate):
+                    following.append(candidate[int(segment)])
+        current = following
+        if not current:
+            break
+    return current
+
+
+def _json_resolver_matches(
+    value: dict[str, Any], filters: Any, track: int | str
+) -> bool:
+    if not isinstance(filters, dict):
+        raise ValidationError("filters del resolver JSON debe ser un objeto")
+    for path, expected in filters.items():
+        rendered_expected = (
+            _render_json_resolver_template(expected, track=track)
+            if isinstance(expected, str)
+            else expected
+        )
+        if rendered_expected not in _json_resolver_values(
+            value, str(path), track
+        ):
+            return False
+    return True
+
+
+def _render_json_resolver_template(
+    template: str,
+    *,
+    track: int | str,
+    version: str | None = None,
+    file_name: str | None = None,
+) -> str:
+    rendered = template.replace("{track}", str(track))
+    if version is not None:
+        rendered = rendered.replace("{version}", version)
+    if file_name is not None:
+        rendered = rendered.replace("{fileName}", file_name)
+    if "{" in rendered or "}" in rendered:
+        raise ValidationError(
+            f"Token no soportado en el resolver JSON: {template!r}"
+        )
+    return rendered
 
 
 def _resolve_adoptium(
@@ -892,6 +1163,14 @@ def _validate_artifact(
             f"La versión resuelta {version!r} no pertenece a la línea {track}"
         )
     client.require_https(url)
+    if (
+        not file_name
+        or PurePosixPath(file_name).name != file_name
+        or "\\" in file_name
+    ):
+        raise NetworkError(
+            f"El artefacto tiene un nombre de archivo no seguro: {file_name!r}"
+        )
     if not file_name.lower().endswith(".zip"):
         raise NetworkError(f"El artefacto no es un ZIP: {file_name}")
     checksum_patterns = {"sha256": _SHA256, "sha512": _SHA512}

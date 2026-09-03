@@ -8,10 +8,12 @@ from typing import Any
 from .errors import ValidationError
 from .paths import EapPaths
 from .util import (
+    java_version_key,
     load_json,
     require_fields,
     validate_id,
     version_belongs_to_track,
+    version_key,
 )
 
 
@@ -81,6 +83,17 @@ class ComponentDefinition:
     @property
     def offers_major_updates(self) -> bool:
         return self.value.get("majorUpdates") == "confirm-component-name"
+
+    def comparable_version_key(self, version: str) -> tuple[int, ...]:
+        versioning = self.value.get("versioning", {})
+        scheme = (
+            str(versioning.get("scheme", "numeric"))
+            if isinstance(versioning, dict)
+            else "numeric"
+        )
+        if scheme == "java":
+            return java_version_key(version)
+        return version_key(version)
 
     @property
     def information(self) -> dict[str, Any]:
@@ -741,6 +754,8 @@ class Catalog:
                 raise ValidationError(
                     f"Proveedor no válido {provider_id!r} en {path}"
                 )
+            if resolver.get("type") == "json-index":
+                Catalog._validate_json_index_resolver(resolver, path)
             if (
                 value["kind"] == "external"
                 and resolver.get("type") != "external-executable"
@@ -762,6 +777,15 @@ class Catalog:
             raise ValidationError(
                 f"Política de actualización no válida en {path}: "
                 f"{value['updatePolicy']!r}"
+            )
+        versioning = value.get("versioning", {})
+        if (
+            not isinstance(versioning, dict)
+            or versioning.get("scheme", "numeric")
+            not in {"numeric", "java"}
+        ):
+            raise ValidationError(
+                f"Esquema de versiones no válido en {path}"
             )
         major_updates = value.get("majorUpdates")
         if major_updates not in {None, "confirm-component-name"}:
@@ -786,6 +810,197 @@ class Catalog:
             raise ValidationError(
                 "Los componentes con actualización mayor deben declarar "
                 f"tracks enteros positivos en {path}"
+            )
+
+    @staticmethod
+    def _validate_json_index_resolver(
+        resolver: dict[str, Any], path: Path
+    ) -> None:
+        require_fields(
+            resolver,
+            ("indexUrl", "releases", "artifacts"),
+            f"resolver json-index de {path}",
+        )
+        index_url = resolver["indexUrl"]
+        if (
+            not isinstance(index_url, str)
+            or len(index_url) > 2048
+            or not index_url.startswith("https://")
+        ):
+            raise ValidationError(
+                f"indexUrl de json-index no es válida en {path}"
+            )
+        Catalog._validate_json_resolver_template(
+            index_url, {"track"}, "indexUrl", path
+        )
+
+        releases = resolver["releases"]
+        artifacts = resolver["artifacts"]
+        if not isinstance(releases, dict) or not isinstance(artifacts, dict):
+            raise ValidationError(
+                f"releases y artifacts de json-index deben ser objetos en {path}"
+            )
+        require_fields(
+            releases,
+            ("path", "versionPath"),
+            f"releases de json-index en {path}",
+        )
+        Catalog._validate_json_resolver_path(
+            releases["path"], "releases.path", path
+        )
+        Catalog._validate_json_resolver_path(
+            releases["versionPath"], "releases.versionPath", path
+        )
+        Catalog._validate_json_resolver_filters(
+            releases.get("filters", {}), "releases.filters", path
+        )
+        version_pattern = releases.get("versionPattern")
+        if version_pattern is not None:
+            if not isinstance(version_pattern, str) or len(version_pattern) > 512:
+                raise ValidationError(
+                    f"versionPattern de json-index no es válido en {path}"
+                )
+            try:
+                compiled_pattern = re.compile(version_pattern)
+            except re.error as exc:
+                raise ValidationError(
+                    f"versionPattern de json-index no es válido en {path}"
+                ) from exc
+            if "version" not in compiled_pattern.groupindex:
+                raise ValidationError(
+                    "versionPattern de json-index debe declarar el grupo "
+                    f"(?P<version>...) en {path}"
+                )
+
+        require_fields(
+            artifacts,
+            ("path",),
+            f"artifacts de json-index en {path}",
+        )
+        Catalog._validate_json_resolver_path(
+            artifacts["path"], "artifacts.path", path
+        )
+        Catalog._validate_json_resolver_filters(
+            artifacts.get("filters", {}), "artifacts.filters", path
+        )
+        for field in (
+            "fileNamePath",
+            "urlPath",
+            "sha256Path",
+            "sha512Path",
+            "sizePath",
+        ):
+            if field in artifacts:
+                Catalog._validate_json_resolver_path(
+                    artifacts[field], f"artifacts.{field}", path
+                )
+        has_url_path = "urlPath" in artifacts
+        has_url_template = "urlTemplate" in artifacts
+        if has_url_path == has_url_template:
+            raise ValidationError(
+                "artifacts de json-index debe declarar exactamente uno de "
+                f"urlPath o urlTemplate en {path}"
+            )
+        if has_url_template:
+            url_template = artifacts["urlTemplate"]
+            if (
+                not isinstance(url_template, str)
+                or len(url_template) > 2048
+                or not url_template.startswith("https://")
+                or "fileNamePath" not in artifacts
+            ):
+                raise ValidationError(
+                    f"urlTemplate de json-index no es válida en {path}"
+                )
+            Catalog._validate_json_resolver_template(
+                url_template,
+                {"track", "version", "fileName"},
+                "artifacts.urlTemplate",
+                path,
+            )
+        if ("sha256Path" in artifacts) == ("sha512Path" in artifacts):
+            raise ValidationError(
+                "artifacts de json-index debe declarar exactamente uno de "
+                f"sha256Path o sha512Path en {path}"
+            )
+        if artifacts.get("selection", "only") not in {
+            "only",
+            "first",
+            "last",
+        }:
+            raise ValidationError(
+                f"artifacts.selection de json-index no es válida en {path}"
+            )
+
+    @staticmethod
+    def _validate_json_resolver_path(
+        value: Any, label: str, manifest_path: Path
+    ) -> None:
+        if (
+            not isinstance(value, str)
+            or len(value) > 512
+            or not value.startswith("/")
+            or "//" in value
+        ):
+            raise ValidationError(
+                f"{label} de json-index no es una ruta válida en {manifest_path}"
+            )
+        Catalog._validate_json_resolver_template(
+            value, {"track"}, label, manifest_path
+        )
+        for segment in value[1:].split("/") if value != "/" else []:
+            decoded = segment.replace("~1", "/").replace("~0", "~")
+            if (
+                not decoded
+                or len(decoded) > 128
+                or decoded.count("*") > 2
+            ):
+                raise ValidationError(
+                    f"{label} de json-index no es una ruta válida en "
+                    f"{manifest_path}"
+                )
+
+    @staticmethod
+    def _validate_json_resolver_filters(
+        value: Any, label: str, manifest_path: Path
+    ) -> None:
+        if not isinstance(value, dict) or len(value) > 16:
+            raise ValidationError(
+                f"{label} de json-index no es válido en {manifest_path}"
+            )
+        for filter_path, expected in value.items():
+            Catalog._validate_json_resolver_path(
+                filter_path, label, manifest_path
+            )
+            if isinstance(expected, (dict, list)):
+                raise ValidationError(
+                    f"{label} de json-index sólo admite valores escalares "
+                    f"en {manifest_path}"
+                )
+            if isinstance(expected, str):
+                Catalog._validate_json_resolver_template(
+                    expected, {"track"}, label, manifest_path
+                )
+
+    @staticmethod
+    def _validate_json_resolver_template(
+        value: str,
+        allowed_tokens: set[str],
+        label: str,
+        manifest_path: Path,
+    ) -> None:
+        tokens = set(re.findall(r"\{([A-Za-z][A-Za-z0-9]*)\}", value))
+        without_tokens = re.sub(
+            r"\{[A-Za-z][A-Za-z0-9]*\}", "", value
+        )
+        if (
+            not tokens.issubset(allowed_tokens)
+            or "{" in without_tokens
+            or "}" in without_tokens
+        ):
+            raise ValidationError(
+                f"{label} de json-index usa tokens no soportados en "
+                f"{manifest_path}"
             )
 
     @staticmethod

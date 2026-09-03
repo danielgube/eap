@@ -153,6 +153,7 @@ def java_component(manifest_path: Path) -> ComponentDefinition:
         ),
         "launchers": [],
         "capability": {"id": "runtime.java", "exclusive": True},
+        "versioning": {"scheme": "java"},
         "tracks": [
             {"id": 17, "displayName": "Java 17 LTS"},
             {"id": 21, "displayName": "Java 21 LTS"},
@@ -534,9 +535,30 @@ def golang_component(manifest_path: Path) -> ComponentDefinition:
                     "componentId": "golang-official",
                     "displayName": "Go oficial",
                     "resolver": {
-                        "type": "golang-downloads-index",
+                        "type": "json-index",
                         "indexUrl": "https://go.example/dl/?mode=json",
-                        "downloadBaseUrl": "https://go.example/dl",
+                        "releases": {
+                            "path": "/",
+                            "versionPath": "/version",
+                            "versionPattern": (
+                                r"^go(?P<version>\d+\.\d+\.\d+)$"
+                            ),
+                            "filters": {"/stable": True},
+                        },
+                        "artifacts": {
+                            "path": "/files",
+                            "filters": {
+                                "/os": "windows",
+                                "/arch": "amd64",
+                                "/kind": "archive",
+                            },
+                            "fileNamePath": "/filename",
+                            "urlTemplate": (
+                                "https://go.example/dl/{fileName}"
+                            ),
+                            "sha256Path": "/sha256",
+                            "sizePath": "/size",
+                        },
                     },
                 }
             ],
@@ -560,11 +582,21 @@ def php_component(manifest_path: Path) -> ComponentDefinition:
                     "componentId": "php-windows-official",
                     "displayName": "PHP oficial · NTS x64",
                     "resolver": {
-                        "type": "php-windows-releases",
+                        "type": "json-index",
                         "indexUrl": "https://php.example/releases.json",
-                        "downloadBaseUrl": "https://php.example/releases",
-                        "threadSafety": "nts",
-                        "architecture": "x64",
+                        "releases": {
+                            "path": "/{track}",
+                            "versionPath": "/version",
+                        },
+                        "artifacts": {
+                            "path": "/nts-vs*-x64/zip",
+                            "selection": "last",
+                            "fileNamePath": "/path",
+                            "urlTemplate": (
+                                "https://php.example/releases/{fileName}"
+                            ),
+                            "sha256Path": "/sha256",
+                        },
                     },
                 }
             ],
@@ -872,6 +904,34 @@ class ComponentInfoTests(unittest.TestCase):
             ):
                 Catalog._validate_component(value, "dbeaver", path)
 
+    def test_json_index_contract_rejects_unsafe_declarations(self) -> None:
+        path = Path("external-component.json")
+        resolver = golang_component(path).provider("go-dev")["resolver"]
+
+        Catalog._validate_json_index_resolver(resolver, path)
+
+        invalid_pattern = json.loads(json.dumps(resolver))
+        invalid_pattern["releases"]["versionPattern"] = r"^go\d+$"
+        with self.assertRaisesRegex(ValidationError, "grupo"):
+            Catalog._validate_json_index_resolver(invalid_pattern, path)
+
+        invalid_url = json.loads(json.dumps(resolver))
+        invalid_url["artifacts"]["urlTemplate"] = (
+            "http://example.test/{fileName}"
+        )
+        with self.assertRaisesRegex(ValidationError, "urlTemplate"):
+            Catalog._validate_json_index_resolver(invalid_url, path)
+
+        invalid_token = json.loads(json.dumps(resolver))
+        invalid_token["releases"]["path"] = "/{component}/releases"
+        with self.assertRaisesRegex(ValidationError, "tokens"):
+            Catalog._validate_json_index_resolver(invalid_token, path)
+
+        malformed_token = json.loads(json.dumps(resolver))
+        malformed_token["releases"]["path"] = "/{track/releases"
+        with self.assertRaisesRegex(ValidationError, "tokens"):
+            Catalog._validate_json_index_resolver(malformed_token, path)
+
     def test_component_info_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "dbeaver.json"
@@ -1003,6 +1063,24 @@ class VersionTests(unittest.TestCase):
             component_version_key("maven", "3.9.16", "apache"),
             component_version_key("maven", "3.9.15", "apache"),
         )
+
+    def test_component_version_scheme_comes_from_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            java = java_component(Path(temporary) / "java.json")
+            self.assertEqual(
+                java_version_key("21.0.12.9.1", "corretto"),
+                java.comparable_version_key("21.0.12.9.1"),
+            )
+            component = dbeaver_component(
+                Path(temporary) / "dbeaver.json"
+            )
+            component.value["versioning"] = {"scheme": "unsupported"}
+            with self.assertRaisesRegex(
+                ValidationError, "Esquema de versiones"
+            ):
+                Catalog._validate_component(
+                    component.value, "dbeaver", component.manifest_path
+                )
 
     def test_python_tracks_preserve_minor_version_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1662,6 +1740,63 @@ class ComponentRepositoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "Componente desconocido"):
                 changed.load().component("bruno")
             self.assertIsNone(changed.cached_sources()[0]["revision"])
+
+    def test_external_repository_accepts_json_index_component(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            self._copy_bundled_catalog(paths)
+            settings = Settings(
+                {
+                    "components.repository.community": (
+                        "https://github.com/example/community-components"
+                    )
+                }
+            )
+            catalog_text = json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "catalogVersion": "1.0.0",
+                    "components": [
+                        {
+                            "id": "bruno",
+                            "manifest": "components/bruno.json",
+                        }
+                    ],
+                }
+            )
+            manifest = json.loads(self._bruno_manifest())
+            manifest["providers"][0]["resolver"] = golang_component(
+                Path("golang.json")
+            ).provider("go-dev")["resolver"]
+            manifest_text = json.dumps(manifest)
+
+            class Client:
+                @staticmethod
+                def get_json(url: str, maximum_bytes: int = 0) -> Any:
+                    return {
+                        "commit": {
+                            "sha": ComponentRepositoryTests._REVISION
+                        }
+                    }
+
+                @staticmethod
+                def get_text(url: str, maximum_bytes: int = 0) -> str:
+                    if url.endswith("/catalog.json"):
+                        return catalog_text
+                    if url.endswith("/components/bruno.json"):
+                        return manifest_text
+                    raise AssertionError(f"URL inesperada: {url}")
+
+            component = ComponentRepositoryManager(
+                paths, settings, Client()
+            ).refresh().component("bruno")
+
+            self.assertEqual("community", component.source_id)
+            self.assertEqual(
+                "json-index",
+                component.provider("community")["resolver"]["type"],
+            )
 
     def test_rejects_manifest_traversal_and_cross_repository_collisions(
         self,
@@ -2339,6 +2474,16 @@ class ResolverTests(unittest.TestCase):
                 artifact.url,
             )
 
+            component.provider("go-dev")["resolver"] = {
+                "type": "golang-downloads-index",
+                "indexUrl": "https://go.example/dl/?mode=json",
+                "downloadBaseUrl": "https://go.example/dl",
+            }
+            legacy_artifact = resolve_component(
+                component, "go-dev", "1.27", FakeHttpClient(response)
+            )
+            self.assertEqual(artifact, legacy_artifact)
+
     def test_resolves_php_windows_nts_zip_for_selected_minor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             component = php_component(Path(temporary) / "php.json")
@@ -2380,6 +2525,60 @@ class ResolverTests(unittest.TestCase):
                 "php-8.5.10-nts-Win32-vs17-x64.zip",
                 artifact.url,
             )
+
+            component.provider("php-windows")["resolver"] = {
+                "type": "php-windows-releases",
+                "indexUrl": "https://php.example/releases.json",
+                "downloadBaseUrl": "https://php.example/releases",
+                "threadSafety": "nts",
+                "architecture": "x64",
+            }
+            legacy_artifact = resolve_component(
+                component,
+                "php-windows",
+                "8.5",
+                FakeHttpClient(response),
+            )
+            self.assertEqual(artifact, legacy_artifact)
+
+    def test_json_index_rejects_ambiguous_or_unsafe_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = golang_component(Path(temporary) / "golang.json")
+            release = {
+                "version": "go1.27.1",
+                "stable": True,
+                "files": [
+                    {
+                        "filename": "go1.27.1.windows-amd64.zip",
+                        "os": "windows",
+                        "arch": "amd64",
+                        "kind": "archive",
+                        "sha256": "a" * 64,
+                        "size": 100,
+                    },
+                    {
+                        "filename": "go1.27.1.windows-amd64-alt.zip",
+                        "os": "windows",
+                        "arch": "amd64",
+                        "kind": "archive",
+                        "sha256": "b" * 64,
+                        "size": 100,
+                    },
+                ],
+            }
+            with self.assertRaisesRegex(NetworkError, "varios ZIP"):
+                resolve_component(
+                    component, "go-dev", "1.27", FakeHttpClient([release])
+                )
+
+            component.provider("go-dev")["resolver"]["artifacts"][
+                "selection"
+            ] = "first"
+            release["files"][0]["filename"] = "../payload.zip"
+            with self.assertRaisesRegex(NetworkError, "no seguro"):
+                resolve_component(
+                    component, "go-dev", "1.27", FakeHttpClient([release])
+                )
 
     def test_resolves_latest_pythoncore_zip_for_selected_minor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
