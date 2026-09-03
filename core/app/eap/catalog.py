@@ -79,6 +79,10 @@ class ComponentDefinition:
         return self.kind == "external"
 
     @property
+    def offers_major_updates(self) -> bool:
+        return self.value.get("majorUpdates") == "confirm-component-name"
+
+    @property
     def information(self) -> dict[str, Any]:
         return {
             "description": self.information_description,
@@ -758,6 +762,30 @@ class Catalog:
             raise ValidationError(
                 f"Política de actualización no válida en {path}: "
                 f"{value['updatePolicy']!r}"
+            )
+        major_updates = value.get("majorUpdates")
+        if major_updates not in {None, "confirm-component-name"}:
+            raise ValidationError(
+                f"Política de versión mayor no válida en {path}: "
+                f"{major_updates!r}"
+            )
+        if major_updates is not None and (
+            value["updatePolicy"] != "same-track"
+            or value["kind"] == "external"
+        ):
+            raise ValidationError(
+                "La actualización mayor sólo se admite en componentes "
+                f"gestionados con same-track en {path}"
+            )
+        if major_updates == "confirm-component-name" and any(
+            isinstance(item["id"], bool)
+            or not isinstance(item["id"], int)
+            or item["id"] <= 0
+            for item in value["tracks"]
+        ):
+            raise ValidationError(
+                "Los componentes con actualización mayor deben declarar "
+                f"tracks enteros positivos en {path}"
             )
 
     @staticmethod

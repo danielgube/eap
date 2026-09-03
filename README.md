@@ -28,8 +28,8 @@ combina versiones concretas de herramientas, un workspace y datos portátiles.
 Cambiar de proyecto es cambiar de profile; el resto lo reconstruye EAP.
 
 - **Components** — runtimes y aplicaciones grandes, inmutables y compartidos:
-  Java, Maven, Git, Node.js, Python, Bruno, DBeaver, VS Code, Eclipse, IntelliJ
-  IDEA y más.
+  Java, Maven, Git, Node.js, Python, Go, PHP, Bruno, DBeaver, VS Code, Eclipse,
+  IntelliJ IDEA y más.
 - **Pocketools** — utilidades pequeñas y globales que publican sus propios
   comandos: automatizaciones, helpers de confianza TLS, empaquetado de código y
   cualquier herramienta que merezca estar siempre a mano.

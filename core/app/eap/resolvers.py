@@ -79,6 +79,10 @@ def resolve_component(
         )
     if resolver_type == "nodejs-index":
         return _resolve_nodejs(component, provider, track, client)
+    if resolver_type == "golang-downloads-index":
+        return _resolve_golang(component, provider, track, client)
+    if resolver_type == "php-windows-releases":
+        return _resolve_php_windows(component, provider, track, client)
     if resolver_type == "python-install-manager-index":
         return _resolve_pythoncore(component, provider, track, client)
     if resolver_type == "vscode-update-api":
@@ -494,6 +498,145 @@ def _resolve_nodejs(
         file_name=file_name,
         sha256=checksum,
         size=int(size) if isinstance(size, int) else None,
+        metadata_url=metadata_url,
+    )
+
+
+def _resolve_golang(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    metadata_url = str(resolver["indexUrl"])
+    response = client.get_json(metadata_url)
+    if not isinstance(response, list):
+        raise NetworkError("Go no devolvió un índice de versiones válido")
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for release in response:
+        if not isinstance(release, dict) or release.get("stable") is not True:
+            continue
+        version = str(release.get("version", "")).removeprefix("go")
+        if version_belongs_to_track(track, version):
+            candidates.append((version, release))
+    if not candidates:
+        raise NetworkError(
+            f"Go no publicó un ZIP estable para la línea {track}"
+        )
+    version, release = max(candidates, key=lambda item: version_key(item[0]))
+    files = release.get("files")
+    if not isinstance(files, list):
+        raise NetworkError(
+            f"El índice oficial está incompleto para Go {version}"
+        )
+    archive = next(
+        (
+            item
+            for item in files
+            if isinstance(item, dict)
+            and item.get("os") == "windows"
+            and item.get("arch") == "amd64"
+            and item.get("kind") == "archive"
+            and str(item.get("filename", "")).casefold().endswith(".zip")
+        ),
+        None,
+    )
+    if archive is None:
+        raise NetworkError(
+            f"Go no publicó un ZIP de Windows x64 para la línea {track}"
+        )
+    try:
+        file_name = str(archive["filename"])
+        checksum = str(archive["sha256"]).lower()
+    except (KeyError, TypeError) as exc:
+        raise NetworkError(
+            f"El índice oficial está incompleto para Go {version}"
+        ) from exc
+    download_base_url = str(resolver["downloadBaseUrl"]).rstrip("/")
+    url = f"{download_base_url}/{file_name}"
+    _validate_artifact(
+        track, version, url, file_name, checksum, "sha256", client
+    )
+    size = archive.get("size")
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=checksum,
+        size=int(size) if isinstance(size, int) else None,
+        metadata_url=metadata_url,
+    )
+
+
+def _resolve_php_windows(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    metadata_url = str(resolver["indexUrl"])
+    response = client.get_json(metadata_url)
+    release = response.get(str(track)) if isinstance(response, dict) else None
+    if not isinstance(release, dict):
+        raise NetworkError(
+            f"PHP no publicó metadatos de Windows para la línea {track}"
+        )
+    version = str(release.get("version", ""))
+    thread_safety = str(resolver.get("threadSafety", "nts")).casefold()
+    architecture = str(resolver.get("architecture", "x64")).casefold()
+    build_pattern = re.compile(
+        rf"^{re.escape(thread_safety)}-(?:vs|vc)\d+-"
+        rf"{re.escape(architecture)}$",
+        flags=re.IGNORECASE,
+    )
+    build_keys = sorted(
+        key
+        for key, value in release.items()
+        if isinstance(key, str)
+        and isinstance(value, dict)
+        and build_pattern.fullmatch(key)
+    )
+    if not build_keys:
+        raise NetworkError(
+            "PHP no publicó un ZIP "
+            f"{thread_safety.upper()} de Windows {architecture} "
+            f"para la línea {track}"
+        )
+    package = release[build_keys[-1]].get("zip")
+    if not isinstance(package, dict):
+        raise NetworkError(
+            f"El índice oficial está incompleto para PHP {version}"
+        )
+    try:
+        file_name = str(package["path"])
+        checksum = str(package["sha256"]).lower()
+    except (KeyError, TypeError) as exc:
+        raise NetworkError(
+            f"El índice oficial está incompleto para PHP {version}"
+        ) from exc
+    download_base_url = str(resolver["downloadBaseUrl"]).rstrip("/")
+    url = f"{download_base_url}/{file_name}"
+    _validate_artifact(
+        track, version, url, file_name, checksum, "sha256", client
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=checksum,
+        size=None,
         metadata_url=metadata_url,
     )
 

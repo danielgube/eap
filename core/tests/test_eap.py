@@ -15,14 +15,14 @@ from io import StringIO
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from PIL import Image
 
 from eap import cli as cli_module
 from eap import shortcut_entry as shortcut_entry_module
 from eap import transfers as transfers_module
-from eap.application import EapApplication
+from eap.application import EapApplication, UpdateInfo
 from eap.catalog import Catalog, ComponentCatalogSource, ComponentDefinition
 from eap.component_repositories import (
     ComponentRepositoryManager,
@@ -518,6 +518,60 @@ def python_component(manifest_path: Path) -> ComponentDefinition:
     return ComponentDefinition(manifest_path, value)
 
 
+def golang_component(manifest_path: Path) -> ComponentDefinition:
+    return ComponentDefinition(
+        manifest_path,
+        {
+            "id": "golang",
+            "displayName": "Go",
+            "tracks": [
+                {"id": "1.26", "displayName": "Go 1.26"},
+                {"id": "1.27", "displayName": "Go 1.27"},
+            ],
+            "providers": [
+                {
+                    "id": "go-dev",
+                    "componentId": "golang-official",
+                    "displayName": "Go oficial",
+                    "resolver": {
+                        "type": "golang-downloads-index",
+                        "indexUrl": "https://go.example/dl/?mode=json",
+                        "downloadBaseUrl": "https://go.example/dl",
+                    },
+                }
+            ],
+        },
+    )
+
+
+def php_component(manifest_path: Path) -> ComponentDefinition:
+    return ComponentDefinition(
+        manifest_path,
+        {
+            "id": "php",
+            "displayName": "PHP",
+            "tracks": [
+                {"id": "8.4", "displayName": "PHP 8.4"},
+                {"id": "8.5", "displayName": "PHP 8.5"},
+            ],
+            "providers": [
+                {
+                    "id": "php-windows",
+                    "componentId": "php-windows-official",
+                    "displayName": "PHP oficial · NTS x64",
+                    "resolver": {
+                        "type": "php-windows-releases",
+                        "indexUrl": "https://php.example/releases.json",
+                        "downloadBaseUrl": "https://php.example/releases",
+                        "threadSafety": "nts",
+                        "architecture": "x64",
+                    },
+                }
+            ],
+        },
+    )
+
+
 def dbeaver_component(manifest_path: Path) -> ComponentDefinition:
     value = {
         "schemaVersion": 1,
@@ -577,6 +631,7 @@ def dbeaver_component(manifest_path: Path) -> ComponentDefinition:
         "defaultProvider": "community",
         "defaultTrack": 26,
         "updatePolicy": "same-track",
+        "majorUpdates": "confirm-component-name",
         "providers": [
             {
                 "id": "community",
@@ -666,6 +721,7 @@ def vscode_component(manifest_path: Path) -> ComponentDefinition:
         "tracks": [{"id": 1, "displayName": "VS Code 1.x estable"}],
         "defaultProvider": "microsoft",
         "defaultTrack": 1,
+        "majorUpdates": "confirm-component-name",
         "providers": [
             {
                 "id": "microsoft",
@@ -801,6 +857,20 @@ class ComponentInfoTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "no soportada"):
                 component.compatible_track("25.3", "25.3.5")
+
+    def test_major_update_policy_requires_major_number_tracks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dbeaver.json"
+            value = dbeaver_component(path).value
+            value["tracks"] = [
+                {"id": "26.1", "displayName": "DBeaver 26.1"}
+            ]
+            value["defaultTrack"] = "26.1"
+
+            with self.assertRaisesRegex(
+                ValidationError, "tracks enteros positivos"
+            ):
+                Catalog._validate_component(value, "dbeaver", path)
 
     def test_component_info_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2214,6 +2284,102 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual("node-v24.19.0-win-x64.zip", artifact.file_name)
             self.assertEqual("b" * 64, artifact.sha256)
             self.assertEqual(24, artifact.track)
+
+    def test_resolves_latest_stable_golang_zip_for_selected_minor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = golang_component(Path(temporary) / "golang.json")
+            response = [
+                {
+                    "version": "go1.28rc1",
+                    "stable": False,
+                    "files": [],
+                },
+                {
+                    "version": "go1.27.1",
+                    "stable": True,
+                    "files": [
+                        {
+                            "filename": "go1.27.1.windows-amd64.msi",
+                            "os": "windows",
+                            "arch": "amd64",
+                            "kind": "installer",
+                            "sha256": "a" * 64,
+                            "size": 100,
+                        },
+                        {
+                            "filename": "go1.27.1.windows-amd64.zip",
+                            "os": "windows",
+                            "arch": "amd64",
+                            "kind": "archive",
+                            "sha256": "b" * 64,
+                            "size": 78_931_360,
+                        },
+                    ],
+                },
+                {
+                    "version": "go1.26.8",
+                    "stable": True,
+                    "files": [],
+                },
+            ]
+
+            artifact = resolve_component(
+                component, "go-dev", "1.27", FakeHttpClient(response)
+            )
+
+            self.assertEqual("1.27", artifact.track)
+            self.assertEqual("1.27.1", artifact.version)
+            self.assertEqual(
+                "go1.27.1.windows-amd64.zip", artifact.file_name
+            )
+            self.assertEqual("b" * 64, artifact.sha256)
+            self.assertEqual(78_931_360, artifact.size)
+            self.assertEqual(
+                "https://go.example/dl/go1.27.1.windows-amd64.zip",
+                artifact.url,
+            )
+
+    def test_resolves_php_windows_nts_zip_for_selected_minor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = php_component(Path(temporary) / "php.json")
+            response = {
+                "8.4": {"version": "8.4.25"},
+                "8.5": {
+                    "version": "8.5.10",
+                    "ts-vs17-x64": {
+                        "zip": {
+                            "path": "php-8.5.10-Win32-vs17-x64.zip",
+                            "sha256": "a" * 64,
+                        }
+                    },
+                    "nts-vs17-x64": {
+                        "zip": {
+                            "path": "php-8.5.10-nts-Win32-vs17-x64.zip",
+                            "sha256": "b" * 64,
+                        }
+                    },
+                },
+            }
+
+            artifact = resolve_component(
+                component,
+                "php-windows",
+                "8.5",
+                FakeHttpClient(response),
+            )
+
+            self.assertEqual("8.5", artifact.track)
+            self.assertEqual("8.5.10", artifact.version)
+            self.assertEqual(
+                "php-8.5.10-nts-Win32-vs17-x64.zip",
+                artifact.file_name,
+            )
+            self.assertEqual("b" * 64, artifact.sha256)
+            self.assertEqual(
+                "https://php.example/releases/"
+                "php-8.5.10-nts-Win32-vs17-x64.zip",
+                artifact.url,
+            )
 
     def test_resolves_latest_pythoncore_zip_for_selected_minor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3668,9 +3834,142 @@ class ComponentLifecycleTests(unittest.TestCase):
 
             self.assertEqual(["dbeaver"], [item.family for item in updates])
             self.assertEqual(26, updates[0].track)
+            self.assertFalse(updates[0].major_update)
             self.assertEqual(
                 {"maven": "GitHub rate limit exceeded"}, errors
             )
+
+    def test_opted_in_component_offers_newer_declared_major(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            component = dbeaver_component(paths.temp / "dbeaver.json")
+            component.value["tracks"].append(
+                {"id": 27, "displayName": "DBeaver 27.x estable"}
+            )
+            catalog = Catalog(paths, {}, {"dbeaver": component})
+            store = EnvironmentStore(paths)
+            store.create("default")
+            lock = store.read_lock("default")
+            lock["components"] = [
+                {
+                    "id": "dbeaver",
+                    "provider": "community",
+                    "track": 26,
+                    "version": "26.2.0",
+                }
+            ]
+            atomic_write_json(store.files("default").lock, lock)
+            releases = {
+                26: ResolvedArtifact(
+                    family="dbeaver",
+                    component_id="dbeaver-community",
+                    provider="community",
+                    provider_name="DBeaver Community",
+                    track=26,
+                    version="26.2.1",
+                    url="https://example.test/dbeaver-26.zip",
+                    file_name="dbeaver-26.zip",
+                    sha256="a" * 64,
+                    size=None,
+                    metadata_url="https://example.test/releases",
+                ),
+                27: ResolvedArtifact(
+                    family="dbeaver",
+                    component_id="dbeaver-community",
+                    provider="community",
+                    provider_name="DBeaver Community",
+                    track=27,
+                    version="27.0.0",
+                    url="https://example.test/dbeaver-27.zip",
+                    file_name="dbeaver-27.zip",
+                    sha256="b" * 64,
+                    size=None,
+                    metadata_url="https://example.test/releases",
+                ),
+            }
+            app = EapApplication.__new__(EapApplication)
+            app.catalog = catalog
+            app.environments = store
+
+            with patch.object(
+                app,
+                "resolve",
+                side_effect=lambda family, provider, track: releases[track],
+            ) as resolve:
+                update = app.resolve_update("default", "dbeaver")
+
+            self.assertIsNotNone(update)
+            assert update is not None
+            self.assertEqual(27, update.track)
+            self.assertEqual("27.0.0", update.latest.version)
+            self.assertTrue(update.major_update)
+            self.assertTrue(update.as_json()["majorUpdate"])
+            self.assertEqual(
+                [
+                    call("dbeaver", "community", 26),
+                    call("dbeaver", "community", 27),
+                ],
+                resolve.call_args_list,
+            )
+
+            with (
+                patch.object(app, "resolve_update", return_value=update),
+                patch.object(
+                    app,
+                    "install",
+                    return_value=(update.latest, Path("dbeaver")),
+                ) as install,
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "confirmar el nombre"
+                ):
+                    app.update("default", "dbeaver")
+                app.update(
+                    "default",
+                    "dbeaver",
+                    major_confirmation="dbeaver",
+                )
+            install.assert_called_once()
+
+    def test_runtime_does_not_offer_another_major_track(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            component = java_component(paths.temp / "java.json")
+            app = EapApplication.__new__(EapApplication)
+            app.catalog = Catalog(paths, {}, {"java": component})
+            latest = ResolvedArtifact(
+                family="java",
+                component_id="java-temurin",
+                provider="temurin",
+                provider_name="Eclipse Temurin",
+                track=21,
+                version="21.0.13+9",
+                url="https://example.test/java.zip",
+                file_name="java.zip",
+                sha256="a" * 64,
+                size=None,
+                metadata_url="https://example.test/releases",
+            )
+
+            with patch.object(
+                app, "resolve", return_value=latest
+            ) as resolve:
+                update = app._resolve_locked_update(
+                    {
+                        "id": "java",
+                        "provider": "temurin",
+                        "track": 21,
+                        "version": "21.0.12+8",
+                    }
+                )
+
+            self.assertIsNotNone(update)
+            assert update is not None
+            self.assertEqual(21, update.track)
+            self.assertFalse(update.major_update)
+            resolve.assert_called_once_with("java", "temurin", 21)
 
     def test_disabled_payload_can_be_reactivated_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -5001,7 +5300,7 @@ class TransferTests(unittest.TestCase):
                 "envs/dani/config.properties",
             ],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             check=True,
         ).stdout
         self.assertIn("Configuración privada no incluida", safe_config)
@@ -5865,12 +6164,50 @@ class InterfaceTests(unittest.TestCase):
             rendered = "\n".join(rows)
 
             self.assertIn("Repositorio", rendered)
+            self.assertIn("Tipo", rendered)
             self.assertIn("Active", rendered)
+            self.assertIn("Run", rendered)
             self.assertIn("danielgube", rendered)
+            self.assertIn("runtime", rendered)
             self.assertIn("Java JDK · 21.0.12+8", rendered)
             self.assertRegex(
                 rendered, r"danielgube\s+\?\s+No\s+\[1i\]"
             )
+
+    def test_component_table_marks_runnable_applications(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = dbeaver_component(
+                Path(temporary) / "dbeaver.json"
+            )
+            launcher = SimpleNamespace(
+                id="dbeaver", component_id="dbeaver"
+            )
+            app = SimpleNamespace(
+                catalog=SimpleNamespace(
+                    component=lambda component_id: component
+                ),
+                available_launchers=lambda environment_id: [launcher],
+            )
+            inventory = [
+                {
+                    "id": "dbeaver",
+                    "provider": "community",
+                    "version": "26.2.0",
+                    "active": True,
+                }
+            ]
+
+            [(_, rows)] = cli_module._inventory_sections(
+                app,
+                "default",
+                inventory,
+                {"state": "done", "updates": []},
+                numbered=True,
+            )
+            rendered = "\n".join(rows)
+
+            self.assertIn("application", rendered)
+            self.assertIn("[1r]", rendered)
 
     def test_inactive_table_entry_can_activate_its_local_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -6071,19 +6408,23 @@ class InterfaceTests(unittest.TestCase):
             [
                 "[1]",
                 "Java JDK · 21",
+                "runtime",
                 "Eclipse Temurin",
                 "danielgube",
                 "25",
                 "Sí",
+                "",
                 "[1i]",
             ],
             [
                 "[2]",
                 "Node.js · 24",
+                "runtime",
                 "Node.js Foundation",
                 "danielgube",
                 "",
                 "No",
+                "",
                 "[2i]",
             ],
         ]
@@ -7208,6 +7549,7 @@ class InterfaceTests(unittest.TestCase):
                     "cc",
                     "c",
                     "p",
+                    "1r",
                     "1i",
                     "1",
                     "m",
@@ -7242,6 +7584,10 @@ class InterfaceTests(unittest.TestCase):
                 "_interactive_component_actions",
                 return_value=status,
             ) as component_actions,
+            patch.object(
+                cli_module,
+                "_interactive_launch_component",
+            ) as launch_component,
             patch.object(
                 cli_module,
                 "_interactive_component_information",
@@ -7284,7 +7630,50 @@ class InterfaceTests(unittest.TestCase):
         component_information.assert_called_once_with(
             app, "default", component
         )
+        launch_component.assert_called_once_with(app, "default", "java")
         manage.assert_called_once_with(app, "default")
+
+    def test_catalog_routes_component_run_shortcut(self) -> None:
+        status = {
+            "state": "cached",
+            "updates": [],
+            "resolved": [],
+            "error": None,
+        }
+        selected = {"id": "dbeaver"}
+        app = SimpleNamespace()
+        output = StringIO()
+        with (
+            patch.object(
+                cli_module,
+                "_profile_component_entries",
+                return_value=[selected],
+            ),
+            patch.object(
+                cli_module, "_ordered_inventory", return_value=[selected]
+            ),
+            patch.object(cli_module, "_missing_components", return_value=[]),
+            patch.object(
+                cli_module,
+                "_inventory_sections",
+                return_value=[("Componentes", ["[1] DBeaver"])],
+            ),
+            patch.object(
+                cli_module, "_read_input", side_effect=["1r", "\x1b"]
+            ),
+            patch.object(
+                cli_module, "_interactive_launch_component"
+            ) as launch_component,
+            redirect_stdout(output),
+        ):
+            result = cli_module._interactive_catalog(
+                app, "default", status
+            )
+
+        self.assertIs(status, result)
+        launch_component.assert_called_once_with(
+            app, "default", "dbeaver"
+        )
 
     def test_managed_menu_escape_enters_the_environment_cmd(self) -> None:
         calls: list[tuple[str, str]] = []
@@ -7385,7 +7774,15 @@ class InterfaceTests(unittest.TestCase):
             patch.object(
                 cli_module,
                 "_read_input",
-                side_effect=["1", "3", "4", "2", "\x1b", "\x1b"],
+                side_effect=[
+                    "1",
+                    "3",
+                    "2",
+                    "4",
+                    "2",
+                    "\x1b",
+                    "\x1b",
+                ],
             ),
             redirect_stdout(output),
         ):
@@ -7393,7 +7790,7 @@ class InterfaceTests(unittest.TestCase):
                 app, "default", status
             )
         self.assertIs(status, result)
-        self.assertEqual([("default", "dbeaver")], launched)
+        self.assertEqual([("prueba", "dbeaver")], launched)
         self.assertEqual([("prueba", "dbeaver")], shortcuts)
         rendered = output.getvalue()
         self.assertIn("[N] Instalar nuevo componente", rendered)
@@ -7403,12 +7800,46 @@ class InterfaceTests(unittest.TestCase):
         )
         self.assertIn("[G] Gestionar repositorios", rendered)
         self.assertIn("[3] Lanzar aplicación", rendered)
+        self.assertIn("Profile de lanzamiento", rendered)
         self.assertIn(
             "[4] Crear acceso directo en el escritorio", rendered
         )
         self.assertIn("Profile del acceso directo", rendered)
         self.assertIn("[1] default (actual)", rendered)
         self.assertIn("[2] prueba", rendered)
+
+    def test_launch_profile_selector_only_lists_active_profiles(self) -> None:
+        launcher = SimpleNamespace(
+            id="dbeaver", component_id="dbeaver"
+        )
+        inventory = {
+            "default": [{"id": "dbeaver"}],
+            "prueba": [{"id": "dbeaver"}],
+            "sin-dbeaver": [{"id": "java"}],
+        }
+        app = SimpleNamespace(
+            environments=SimpleNamespace(
+                list=lambda: ["default", "prueba", "sin-dbeaver"]
+            ),
+            inventory=lambda profile_id: inventory[profile_id],
+            available_launchers=lambda profile_id: [launcher],
+        )
+        output = StringIO()
+        with (
+            patch.object(cli_module, "_read_input", return_value="2"),
+            redirect_stdout(output),
+        ):
+            selection = cli_module._select_launch_profile(
+                app, "default", "dbeaver"
+            )
+
+        self.assertIsNotNone(selection)
+        assert selection is not None
+        self.assertEqual("prueba", selection[0])
+        rendered = output.getvalue()
+        self.assertIn("[1] default (actual)", rendered)
+        self.assertIn("[2] prueba", rendered)
+        self.assertNotIn("sin-dbeaver", rendered)
 
     def test_shortcut_profile_selector_rejects_unavailable_launcher(self) -> None:
         launcher = SimpleNamespace(id="dbeaver")
@@ -7622,10 +8053,12 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("┌─ Componentes (3)", rendered)
             self.assertIn("ID", rendered)
             self.assertIn("Nombre", rendered)
+            self.assertIn("Tipo", rendered)
             self.assertIn("Proveedor", rendered)
             self.assertIn("Repositorio", rendered)
             self.assertIn("Update", rendered)
             self.assertIn("Active", rendered)
+            self.assertIn("Run", rendered)
             self.assertIn("Info", rendered)
             self.assertIn("[1]", rendered)
             self.assertIn("[1i]", rendered)
@@ -7766,6 +8199,126 @@ class InterfaceTests(unittest.TestCase):
                     },
                 ),
             )
+
+    def test_major_update_requires_yes_and_typed_component_name(self) -> None:
+        component = SimpleNamespace(
+            id="dbeaver", display_name="DBeaver Community"
+        )
+        update = UpdateInfo(
+            family="dbeaver",
+            provider="community",
+            track=27,
+            current_version="26.2.0",
+            latest=ResolvedArtifact(
+                family="dbeaver",
+                component_id="dbeaver-community",
+                provider="community",
+                provider_name="DBeaver Community",
+                track=27,
+                version="27.0.0",
+                url="https://example.test/dbeaver.zip",
+                file_name="dbeaver.zip",
+                sha256="a" * 64,
+                size=None,
+                metadata_url="https://example.test/releases",
+            ),
+            major_update=True,
+        )
+        output = StringIO()
+        with (
+            patch.object(cli_module, "_confirm", return_value=True),
+            patch.object(
+                cli_module, "_read_input", return_value="dbeaver"
+            ) as read_input,
+            redirect_stdout(output),
+        ):
+            self.assertTrue(
+                cli_module._confirm_component_update(component, update)
+            )
+
+        self.assertIn("¡Aviso importante! Versión mayor", output.getvalue())
+        self.assertIn("cambios incompatibles", output.getvalue())
+        self.assertIn("Escriba dbeaver", read_input.call_args.args[0])
+
+        with (
+            patch.object(cli_module, "_confirm", return_value=True),
+            patch.object(cli_module, "_read_input", return_value="otro"),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertFalse(
+                cli_module._confirm_component_update(component, update)
+            )
+
+    def test_noninteractive_major_update_requires_named_option(self) -> None:
+        component = SimpleNamespace(
+            id="dbeaver", display_name="DBeaver Community"
+        )
+        update = UpdateInfo(
+            family="dbeaver",
+            provider="community",
+            track=27,
+            current_version="26.2.0",
+            latest=ResolvedArtifact(
+                family="dbeaver",
+                component_id="dbeaver-community",
+                provider="community",
+                provider_name="DBeaver Community",
+                track=27,
+                version="27.0.0",
+                url="https://example.test/dbeaver.zip",
+                file_name="dbeaver.zip",
+                sha256="a" * 64,
+                size=None,
+                metadata_url="https://example.test/releases",
+            ),
+            major_update=True,
+        )
+        installed: list[ResolvedArtifact] = []
+        app = SimpleNamespace(
+            environments=SimpleNamespace(
+                read_desired=lambda profile_id: {"id": profile_id}
+            ),
+            resolve_update=lambda profile_id, component_id: update,
+            catalog=SimpleNamespace(
+                component=lambda component_id: component
+            ),
+            install=lambda *args, **kwargs: (
+                installed.append(kwargs["artifact"])
+                or (kwargs["artifact"], Path("dbeaver"))
+            ),
+        )
+        parser = cli_module.build_parser()
+        missing_name = parser.parse_args(
+            [
+                "component",
+                "update",
+                "dbeaver",
+                "--profile",
+                "default",
+                "--yes",
+            ]
+        )
+        with (
+            self.assertRaisesRegex(ValidationError, "--confirm-major"),
+            redirect_stdout(StringIO()),
+        ):
+            cli_module.dispatch(app, missing_name)
+
+        confirmed = parser.parse_args(
+            [
+                "component",
+                "update",
+                "dbeaver",
+                "--profile",
+                "default",
+                "--yes",
+                "--confirm-major",
+                "dbeaver",
+            ]
+        )
+        with redirect_stdout(StringIO()):
+            self.assertEqual(0, cli_module.dispatch(app, confirmed))
+        self.assertEqual([update.latest], installed)
 
 
 if __name__ == "__main__":

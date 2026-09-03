@@ -156,17 +156,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     check_parser = component_subparsers.add_parser(
-        "check-updates", help="buscar actualizaciones en la misma línea"
+        "check-updates", help="buscar actualizaciones disponibles"
     )
     _add_profile_argument(check_parser)
     check_parser.add_argument("--json", action="store_true")
 
     update_parser = component_subparsers.add_parser(
-        "update", help="actualizar un componente en su misma línea"
+        "update", help="actualizar un componente"
     )
     update_parser.add_argument("component")
     _add_profile_argument(update_parser)
     update_parser.add_argument("--yes", action="store_true")
+    update_parser.add_argument(
+        "--confirm-major",
+        metavar="COMPONENTE",
+        help=(
+            "confirmación escrita requerida con --yes para una versión mayor"
+        ),
+    )
 
     disable_parser = component_subparsers.add_parser(
         "disable", help="desactivar un componente sólo en un profile"
@@ -1271,13 +1278,19 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 environment_id, arguments.component
             )
             if update is None:
-                print("Ya está instalada la última versión de esta línea.")
+                print("Ya está instalada la última versión disponible.")
                 return 0
             print(
                 f"{update.current_version} -> {update.latest.version} "
                 f"({update.provider}, línea {update.track})"
             )
-            if not arguments.yes and not _confirm("¿Actualizar?"):
+            component = app.catalog.component(update.family)
+            if not _confirm_component_update(
+                component,
+                update,
+                assume_yes=arguments.yes,
+                written_confirmation=arguments.confirm_major,
+            ):
                 print("Cancelado.")
                 return 0
             artifact, install_path = app.install(
@@ -1496,6 +1509,21 @@ def _run_interactive(
                         _interactive_restore_missing(app, environment_id)
                     update_status = _initial_update_status(
                         app, environment_id
+                    )
+                elif run_match := re.fullmatch(r"(\d+)r", option):
+                    ordered_inventory = _ordered_inventory(
+                        app,
+                        _profile_component_entries(app, environment_id),
+                    )
+                    selected_index = int(run_match.group(1)) - 1
+                    if not 0 <= selected_index < len(ordered_inventory):
+                        print("Opción no válida.")
+                        _pause_after_result()
+                        continue
+                    _interactive_launch_component(
+                        app,
+                        environment_id,
+                        str(ordered_inventory[selected_index]["id"]),
                     )
                 elif info_match := re.fullmatch(r"(\d+)i", option):
                     ordered_inventory = _ordered_inventory(
@@ -1766,6 +1794,7 @@ def _inventory_sections(
             [
                 f"[{index}]" if numbered else str(index),
                 f"{component.display_name} · {item['version']}{missing_marker}",
+                component.kind,
                 str(provider["displayName"]),
                 str(
                     item.get("repository")
@@ -1773,6 +1802,14 @@ def _inventory_sections(
                 ),
                 _component_update_version(component, update_status),
                 "Sí" if item.get("active", True) else "No",
+                (
+                    f"[{index}r]"
+                    if numbered
+                    and item.get("active", True)
+                    and component.id not in missing_ids
+                    and bool(component.value.get("launchers"))
+                    else ""
+                ),
                 f"[{index}i]" if numbered else "",
             ]
         )
@@ -1788,10 +1825,12 @@ def _component_table_rows(rows: list[list[str]]) -> list[str]:
     headers = [
         "ID",
         "Nombre",
+        "Tipo",
         "Proveedor",
         "Repositorio",
         "Update",
         "Active",
+        "Run",
         "Info",
     ]
     available = _terminal_panel_width() - 4
@@ -1804,7 +1843,7 @@ def _component_table_rows(rows: list[list[str]]) -> list[str]:
     while sum(widths) + len(gap) * (len(headers) - 1) > available:
         candidates = [
             index
-            for index in (3, 2, 1, 4, 5, 0, 6)
+            for index in (4, 3, 1, 2, 5, 6, 0, 7, 8)
             if widths[index] > minimums[index]
         ]
         if not candidates:
@@ -1986,6 +2025,18 @@ def _interactive_catalog(
         option = _read_input("> ").strip().lower()
         if _is_escape(option) or option in {"v", "volver", "q"}:
             return update_status
+        if run_match := re.fullmatch(r"(\d+)r", option):
+            selected_index = int(run_match.group(1)) - 1
+            if not 0 <= selected_index < len(ordered_inventory):
+                print("Opción no válida.")
+                _pause_after_result()
+                continue
+            _interactive_launch_component(
+                app,
+                environment_id,
+                str(ordered_inventory[selected_index]["id"]),
+            )
+            continue
         if info_match := re.fullmatch(r"(\d+)i", option):
             selected_index = int(info_match.group(1)) - 1
             if not 0 <= selected_index < len(ordered_inventory):
@@ -2527,6 +2578,8 @@ def _interactive_component_actions(
                         )
                     )
                 )
+                if cached_update.get("majorUpdate") is True:
+                    update_action += " · versión mayor"
             actions = [
                 ("1", update_action, "update"),
                 ("2", "Cambiar proveedor o línea", "change"),
@@ -2700,14 +2753,13 @@ def _interactive_component_actions(
                 if str(getattr(item, "family", "")) != component_id
             ]
             return update_status
+        if action == "launch":
+            _interactive_launch_component(
+                app, environment_id, component_id
+            )
+            continue
         launcher = _select_component_launcher(launchers)
         if launcher is None:
-            continue
-        if action == "launch":
-            result = app.launch(environment_id, launcher.id)
-            if launcher.start_mode == "detached":
-                print(f"{launcher.display_name} arrancado · PID {result}")
-                _pause_after_result()
             continue
         shortcut_environment_id = _select_shortcut_profile(
             app, environment_id, launcher.id
@@ -2752,6 +2804,73 @@ def _select_component_launcher(launchers: list[Any]) -> Any | None:
     if selected_index is None:
         return None
     return launchers[selected_index]
+
+
+def _interactive_launch_component(
+    app: EapApplication,
+    current_profile_id: str,
+    component_id: str,
+) -> None:
+    selection = _select_launch_profile(
+        app, current_profile_id, component_id
+    )
+    if selection is None:
+        return
+    profile_id, launchers = selection
+    launcher = _select_component_launcher(launchers)
+    if launcher is None:
+        return
+    result = app.launch(profile_id, launcher.id)
+    if launcher.start_mode == "detached":
+        print(f"{launcher.display_name} arrancado · PID {result}")
+        _pause_after_result()
+
+
+def _select_launch_profile(
+    app: EapApplication,
+    current_profile_id: str,
+    component_id: str,
+) -> tuple[str, list[Any]] | None:
+    active_profiles: list[str] = []
+    for profile_id in app.environments.list():
+        if any(
+            str(item.get("id")) == component_id
+            for item in app.inventory(profile_id)
+        ):
+            active_profiles.append(profile_id)
+    if not active_profiles:
+        print(
+            f"{component_id} no tiene una aplicación arrancable en ningún "
+            "profile."
+        )
+        _pause_after_result()
+        return None
+    profile_id = active_profiles[0]
+    if len(active_profiles) > 1:
+        rows = []
+        for index, candidate in enumerate(active_profiles, start=1):
+            marker = " (actual)" if candidate == current_profile_id else ""
+            rows.append(f"[{index}] {candidate}{marker}")
+        rows.append("[Esc] Volver")
+        _start_page("Inicio > Catálogo > Lanzar aplicación")
+        _print_panel("Profile de lanzamiento", [("", rows)])
+        selected_index = _read_index(len(active_profiles))
+        if selected_index is None:
+            return None
+        profile_id = active_profiles[selected_index]
+    launchers = [
+        launcher
+        for launcher in app.available_launchers(profile_id)
+        if launcher.component_id == component_id
+    ]
+    if not launchers:
+        print(
+            f"{component_id} no tiene una aplicación arrancable en el "
+            f"profile {profile_id}."
+        )
+        _pause_after_result()
+        return None
+    return profile_id, launchers
 
 
 def _select_shortcut_profile(
@@ -2842,11 +2961,17 @@ def _interactive_update_component(
                     f"Nueva: {update.latest.version}",
                     f"Proveedor: {update.latest.provider_name}",
                     f"Línea: {update.track}",
+                    "Tipo: "
+                    + (
+                        "versión mayor"
+                        if update.major_update
+                        else "actualización compatible"
+                    ),
                 ],
             )
         ],
     )
-    if not _confirm("¿Actualizar este componente?"):
+    if not _confirm_component_update(component, update):
         return update_status
     artifact, path = app.install(
         environment_id,
@@ -4903,6 +5028,58 @@ def _find_locked_component(
     raise ValidationError(f"{component_id} no está instalado")
 
 
+def _confirm_component_update(
+    component: Any,
+    update: UpdateInfo,
+    *,
+    assume_yes: bool = False,
+    written_confirmation: str | None = None,
+) -> bool:
+    if not update.major_update:
+        return assume_yes or _confirm("¿Actualizar este componente?")
+
+    _print_panel(
+        "¡Aviso importante! Versión mayor",
+        [
+            (
+                "",
+                [
+                    f"{component.display_name}: "
+                    f"{update.current_version} -> {update.latest.version}",
+                    "Esta versión puede introducir cambios incompatibles "
+                    "o requerir migraciones.",
+                    "Lea las notas de la versión y las recomendaciones del "
+                    "proveedor antes de continuar.",
+                ],
+            )
+        ],
+    )
+    if not assume_yes and not _confirm(
+        "¿Continuar con la actualización mayor?"
+    ):
+        return False
+
+    confirmation = written_confirmation
+    if confirmation is None:
+        if assume_yes:
+            raise ValidationError(
+                "La actualización mayor requiere --confirm-major "
+                f"{component.id}"
+            )
+        confirmation = _read_input(
+            f"Escriba {component.id} y pulse Intro para confirmar: "
+        )
+    if confirmation.strip() != component.id:
+        if assume_yes:
+            raise ValidationError(
+                "La confirmación de versión mayor no coincide; use "
+                f"--confirm-major {component.id}"
+            )
+        print("El nombre no coincide. Actualización cancelada.")
+        return False
+    return True
+
+
 def _confirm(message: str) -> bool:
     value = _read_input(f"{message} [s/N/Esc] ").strip().lower()
     if _is_escape(value):
@@ -4965,12 +5142,13 @@ def _print_resolution(artifact: Any) -> None:
 
 def _print_updates(updates: list[UpdateInfo]) -> None:
     if not updates:
-        print("No hay actualizaciones dentro de las líneas seleccionadas.")
+        print("No hay actualizaciones disponibles.")
         return
     for item in updates:
+        warning = " · VERSIÓN MAYOR" if item.major_update else ""
         print(
             f"{item.family}/{item.provider} línea {item.track}: "
-            f"{item.current_version} -> {item.latest.version}"
+            f"{item.current_version} -> {item.latest.version}{warning}"
         )
 
 

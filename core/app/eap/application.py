@@ -66,6 +66,7 @@ from .util import (
     sha256_file,
     utc_now,
     validate_version,
+    version_key,
 )
 
 
@@ -76,6 +77,7 @@ class UpdateInfo:
     track: int | str
     current_version: str
     latest: ResolvedArtifact
+    major_update: bool = False
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -84,6 +86,7 @@ class UpdateInfo:
             "track": self.track,
             "currentVersion": self.current_version,
             "latestVersion": self.latest.version,
+            "majorUpdate": self.major_update,
             "artifact": self.latest.as_json(),
         }
 
@@ -1335,17 +1338,46 @@ class EapApplication:
             current_version,
         )
         latest = self.resolve(family, provider, track)
+        major_track = self._newer_declared_major_track(
+            component, current_version
+        )
+        if major_track is not None:
+            major_candidate = self.resolve(family, provider, major_track)
+            if component_version_key(
+                family, major_candidate.version, provider
+            ) > component_version_key(family, latest.version, provider):
+                latest = major_candidate
+                track = major_track
         if component_version_key(
             family, latest.version, provider
         ) <= component_version_key(family, current_version, provider):
             return None
+        major_update = (
+            version_key(latest.version)[0]
+            > version_key(current_version)[0]
+        )
         return UpdateInfo(
             family=family,
             provider=provider,
             track=track,
             current_version=current_version,
             latest=latest,
+            major_update=major_update,
         )
+
+    @staticmethod
+    def _newer_declared_major_track(
+        component: ComponentDefinition, current_version: str
+    ) -> int | None:
+        if not component.offers_major_updates:
+            return None
+        current_major = version_key(current_version)[0]
+        candidates = [
+            int(item["id"])
+            for item in component.tracks
+            if int(item["id"]) > current_major
+        ]
+        return max(candidates) if candidates else None
 
     @staticmethod
     def _effective_update_track(
@@ -1356,7 +1388,10 @@ class EapApplication:
         return component.compatible_track(locked_track, current_version)
 
     def update(
-        self, environment_id: str, component_id: str
+        self,
+        environment_id: str,
+        component_id: str,
+        major_confirmation: str | None = None,
     ) -> tuple[ResolvedArtifact, Path] | None:
         if self.catalog.component(component_id).is_external:
             raise ValidationError(
@@ -1366,6 +1401,14 @@ class EapApplication:
         update = self.resolve_update(environment_id, component_id)
         if update is None:
             return None
+        if (
+            update.major_update
+            and major_confirmation != component_id
+        ):
+            raise ValidationError(
+                "La actualización mayor requiere confirmar el nombre "
+                f"del componente: {component_id}"
+            )
         return self.install(
             environment_id,
             component_id,
