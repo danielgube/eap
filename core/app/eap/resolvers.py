@@ -65,6 +65,8 @@ def resolve_component(
     resolver_type = resolver.get("type")
     if resolver_type == "json-index":
         return _resolve_json_index(component, provider, track, client)
+    if resolver_type == "html-directory":
+        return _resolve_html_directory(component, provider, track, client)
     if resolver_type == "adoptium-v3":
         return _resolve_adoptium(component, provider, track, client)
     if resolver_type == "corretto-index":
@@ -109,7 +111,7 @@ def _resolve_json_index(
     client: HttpClient,
 ) -> ResolvedArtifact:
     resolver = provider["resolver"]
-    metadata_url = _render_json_resolver_template(
+    metadata_url = _render_resolver_template(
         str(resolver["indexUrl"]), track=track
     )
     response = client.get_json(metadata_url)
@@ -211,7 +213,7 @@ def _resolve_json_index(
             )
         )
     else:
-        url = _render_json_resolver_template(
+        url = _render_resolver_template(
             str(artifacts_declaration["urlTemplate"]),
             track=track,
             version=version,
@@ -299,7 +301,7 @@ def _json_resolver_scalar(
 def _json_resolver_values(
     value: Any, path: str, track: int | str
 ) -> list[Any]:
-    rendered_path = _render_json_resolver_template(path, track=track)
+    rendered_path = _render_resolver_template(path, track=track)
     if rendered_path in {"", "/"}:
         return [value]
     if not rendered_path.startswith("/"):
@@ -341,7 +343,7 @@ def _json_resolver_matches(
         raise ValidationError("filters del resolver JSON debe ser un objeto")
     for path, expected in filters.items():
         rendered_expected = (
-            _render_json_resolver_template(expected, track=track)
+            _render_resolver_template(expected, track=track)
             if isinstance(expected, str)
             else expected
         )
@@ -352,23 +354,111 @@ def _json_resolver_matches(
     return True
 
 
-def _render_json_resolver_template(
+def _render_resolver_template(
     template: str,
     *,
     track: int | str,
     version: str | None = None,
     file_name: str | None = None,
+    artifact_url: str | None = None,
 ) -> str:
     rendered = template.replace("{track}", str(track))
     if version is not None:
         rendered = rendered.replace("{version}", version)
     if file_name is not None:
         rendered = rendered.replace("{fileName}", file_name)
+    if artifact_url is not None:
+        rendered = rendered.replace("{artifactUrl}", artifact_url)
     if "{" in rendered or "}" in rendered:
         raise ValidationError(
-            f"Token no soportado en el resolver JSON: {template!r}"
+            f"Token no soportado en la plantilla del resolver: {template!r}"
         )
     return rendered
+
+
+def _resolve_html_directory(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    metadata_url = _render_resolver_template(
+        str(resolver["indexUrl"]), track=track
+    )
+    index = client.get_text(metadata_url)
+    try:
+        release_pattern = re.compile(
+            str(resolver["releasePattern"]), flags=re.IGNORECASE
+        )
+    except re.error as exc:
+        raise ValidationError(
+            "releasePattern no es una expresión regular válida"
+        ) from exc
+    versions: set[str] = set()
+    for match in release_pattern.finditer(index):
+        try:
+            version = validate_version(str(match.group("version")))
+        except (IndexError, ValidationError):
+            continue
+        if version_belongs_to_track(track, version):
+            versions.add(version)
+    if not versions:
+        raise NetworkError(
+            f"El índice HTML no publicó una versión estable de "
+            f"{component.display_name} para la línea {track}"
+        )
+    version = max(versions, key=component.comparable_version_key)
+    url = _render_resolver_template(
+        str(resolver["artifactUrlTemplate"]),
+        track=track,
+        version=version,
+    )
+    file_name = PurePosixPath(urllib.parse.urlparse(url).path).name
+    checksum_url = _render_resolver_template(
+        str(resolver["checksumUrlTemplate"]),
+        track=track,
+        version=version,
+        file_name=file_name,
+        artifact_url=url,
+    )
+    checksum_algorithm = str(resolver["checksumAlgorithm"]).lower()
+    checksum_response = client.get_text(
+        checksum_url, maximum_bytes=4096
+    )
+    checksum_pattern = _SHA256 if checksum_algorithm == "sha256" else _SHA512
+    checksum_match = re.search(
+        rf"\b({checksum_pattern.pattern[1:-1]})\b", checksum_response
+    )
+    if checksum_match is None:
+        raise NetworkError(
+            f"El índice HTML no proporcionó un {checksum_algorithm.upper()} "
+            f"válido para {file_name}"
+        )
+    checksum = checksum_match.group(1).lower()
+    _validate_artifact(
+        track,
+        version,
+        url,
+        file_name,
+        checksum,
+        checksum_algorithm,
+        client,
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=checksum if checksum_algorithm == "sha256" else None,
+        sha512=checksum if checksum_algorithm == "sha512" else None,
+        size=None,
+        metadata_url=metadata_url,
+    )
 
 
 def _resolve_adoptium(

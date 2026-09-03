@@ -1897,10 +1897,11 @@ def _ordered_inventory(
 ) -> list[dict[str, Any]]:
     kind_order = {
         "runtime": 0,
-        "tool": 1,
-        "application": 2,
-        "external": 3,
-        "service": 4,
+        "server": 1,
+        "tool": 2,
+        "application": 3,
+        "external": 4,
+        "service": 5,
     }
     return sorted(
         inventory,

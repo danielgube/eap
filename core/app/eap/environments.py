@@ -28,6 +28,7 @@ from .util import (
 _CUSTOM_COMMAND_EXTENSIONS = frozenset(
     {".bat", ".cmd", ".com", ".exe", ".ps1"}
 )
+_LEGACY_APPENDABLE_ENVIRONMENT_VARIABLES = {"java_tool_options"}
 
 
 @dataclass(frozen=True)
@@ -559,14 +560,8 @@ class EnvironmentStore:
         catalog: Catalog,
         allow_missing: bool = False,
     ) -> dict[str, str]:
-        declared_component_variables = {
-            str(name).casefold()
-            for component in catalog.definitions.values()
-            for name in (
-                *component.value["environment"]["variables"],
-                *component.value["environment"].get("unset", []),
-            )
-        }
+        managed_component_variables: set[str] = set()
+        appendable_component_variables: set[str] = set()
         core_text = str(self.paths.core).casefold()
         environment = {
             key: value
@@ -684,6 +679,19 @@ class EnvironmentStore:
             managed_names = (
                 *declaration["variables"].keys(),
                 *declaration.get("unset", []),
+            )
+            managed_component_variables.update(
+                str(name).casefold() for name in managed_names
+            )
+            appendable_component_variables.update(
+                str(name).casefold()
+                for name in declaration.get("appendable", [])
+            )
+            appendable_component_variables.update(
+                str(name).casefold()
+                for name in declaration["variables"]
+                if str(name).casefold()
+                in _LEGACY_APPENDABLE_ENVIRONMENT_VARIABLES
             )
             for name in managed_names:
                 normalized_name = str(name).casefold()
@@ -819,7 +827,8 @@ class EnvironmentStore:
         self._apply_configured_environment_variables(
             environment,
             environment_id,
-            declared_component_variables,
+            managed_component_variables,
+            appendable_component_variables,
         )
         apply_proxy_environment(
             environment, load_properties(self.paths.config)
@@ -1174,7 +1183,8 @@ class EnvironmentStore:
         self,
         environment: dict[str, str],
         environment_id: str,
-        declared_component_variables: set[str],
+        managed_component_variables: set[str],
+        appendable_component_variables: set[str],
     ) -> None:
         protected = {
             "path",
@@ -1198,7 +1208,10 @@ class EnvironmentStore:
             "xdg_config_home",
             "xdg_cache_home",
             "xdg_data_home",
-            *declared_component_variables,
+            *(
+                managed_component_variables
+                - appendable_component_variables
+            ),
         }
         existing_names = {name.casefold(): name for name in environment}
         for name, value in self.configured_environment_variables(
@@ -1210,10 +1223,18 @@ class EnvironmentStore:
                     f"env.{name} no puede sobrescribir una variable gestionada por EAP"
                 )
             previous = existing_names.get(folded)
-            if previous is not None and previous != name:
-                environment.pop(previous, None)
-            environment[name] = value
-            existing_names[folded] = name
+            if folded in appendable_component_variables:
+                managed_value = (
+                    environment.get(previous, "").strip()
+                    if previous is not None
+                    else ""
+                )
+                value = " ".join(
+                    part for part in (value.strip(), managed_value) if part
+                )
+            target_name = previous if previous is not None else name
+            environment[target_name] = value
+            existing_names[folded] = target_name
 
     @staticmethod
     def _render_environment_template(

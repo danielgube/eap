@@ -198,6 +198,7 @@ def java_component(manifest_path: Path) -> ComponentDefinition:
                     "-Djava.io.tmpdir=\"{{profile.temp}}\""
                 ),
             },
+            "appendable": ["JAVA_TOOL_OPTIONS"],
             "path": ["{{component.root}}/bin"],
         },
     }
@@ -230,9 +231,17 @@ def maven_component(manifest_path: Path) -> ComponentDefinition:
                 "componentId": "apache-maven",
                 "displayName": "Apache Software Foundation",
                 "resolver": {
-                    "type": "apache-directory",
+                    "type": "html-directory",
                     "indexUrl": "https://downloads.example/maven-3/",
-                    "downloadBaseUrl": "https://downloads.example/maven-3",
+                    "releasePattern": (
+                        r'''href=["'](?P<version>\d+\.\d+\.\d+)/["']'''
+                    ),
+                    "artifactUrlTemplate": (
+                        "https://downloads.example/maven-3/{version}/"
+                        "binaries/apache-maven-{version}-bin.zip"
+                    ),
+                    "checksumUrlTemplate": "{artifactUrl}.sha512",
+                    "checksumAlgorithm": "sha512",
                 },
                 "verification": {"checksumAlgorithm": "sha512"},
             }
@@ -285,6 +294,46 @@ def maven_component(manifest_path: Path) -> ComponentDefinition:
     }
     manifest_path.write_text(json.dumps(value), encoding="utf-8")
     return ComponentDefinition(manifest_path, value)
+
+
+def tomcat_component(manifest_path: Path) -> ComponentDefinition:
+    return ComponentDefinition(
+        manifest_path,
+        {
+            "id": "tomcat",
+            "displayName": "Apache Tomcat",
+            "kind": "server",
+            "tracks": [
+                {"id": 9, "displayName": "Tomcat 9"},
+                {"id": 10, "displayName": "Tomcat 10.1"},
+                {"id": 11, "displayName": "Tomcat 11"},
+            ],
+            "providers": [
+                {
+                    "id": "apache",
+                    "componentId": "apache-tomcat",
+                    "displayName": "Apache Software Foundation",
+                    "resolver": {
+                        "type": "html-directory",
+                        "indexUrl": (
+                            "https://downloads.example/tomcat/tomcat-"
+                            "{track}/"
+                        ),
+                        "releasePattern": (
+                            r'''href=["']v(?P<version>\d+\.\d+\.\d+)/["']'''
+                        ),
+                        "artifactUrlTemplate": (
+                            "https://downloads.example/tomcat/tomcat-"
+                            "{track}/v{version}/bin/"
+                            "apache-tomcat-{version}.zip"
+                        ),
+                        "checksumUrlTemplate": "{artifactUrl}.sha512",
+                        "checksumAlgorithm": "sha512",
+                    },
+                }
+            ],
+        },
+    )
 
 
 def git_component(manifest_path: Path) -> ComponentDefinition:
@@ -922,6 +971,15 @@ class ComponentInfoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "urlTemplate"):
             Catalog._validate_json_index_resolver(invalid_url, path)
 
+        invalid_url_token = json.loads(json.dumps(resolver))
+        invalid_url_token["artifacts"]["urlTemplate"] = (
+            "https://example.test/{component}/{fileName}"
+        )
+        with self.assertRaisesRegex(ValidationError, "tokens"):
+            Catalog._validate_json_index_resolver(
+                invalid_url_token, path
+            )
+
         invalid_token = json.loads(json.dumps(resolver))
         invalid_token["releases"]["path"] = "/{component}/releases"
         with self.assertRaisesRegex(ValidationError, "tokens"):
@@ -931,6 +989,51 @@ class ComponentInfoTests(unittest.TestCase):
         malformed_token["releases"]["path"] = "/{track/releases"
         with self.assertRaisesRegex(ValidationError, "tokens"):
             Catalog._validate_json_index_resolver(malformed_token, path)
+
+    def test_html_directory_contract_rejects_unsafe_declarations(self) -> None:
+        path = Path("external-component.json")
+        resolver = tomcat_component(path).provider("apache")["resolver"]
+
+        Catalog._validate_html_directory_resolver(resolver, path)
+
+        invalid_pattern = json.loads(json.dumps(resolver))
+        invalid_pattern["releasePattern"] = r"href=v\d+/"
+        with self.assertRaisesRegex(ValidationError, "grupo"):
+            Catalog._validate_html_directory_resolver(
+                invalid_pattern, path
+            )
+
+        invalid_url = json.loads(json.dumps(resolver))
+        invalid_url["artifactUrlTemplate"] = (
+            "http://example.test/{version}.zip"
+        )
+        with self.assertRaisesRegex(ValidationError, "artifactUrlTemplate"):
+            Catalog._validate_html_directory_resolver(invalid_url, path)
+
+        invalid_token = json.loads(json.dumps(resolver))
+        invalid_token["indexUrl"] = (
+            "https://example.test/{component}/"
+        )
+        with self.assertRaisesRegex(ValidationError, "tokens"):
+            Catalog._validate_html_directory_resolver(invalid_token, path)
+
+    def test_server_kind_and_appendable_environment_are_manifest_driven(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dbeaver.json"
+            value = dbeaver_component(path).value
+            value["kind"] = "server"
+            value["environment"]["variables"]["SERVER_OPTIONS"] = "--safe"
+            value["environment"]["appendable"] = ["SERVER_OPTIONS"]
+
+            Catalog._validate_component(value, "dbeaver", path)
+
+            value["environment"]["appendable"] = ["UNKNOWN_OPTIONS"]
+            with self.assertRaisesRegex(
+                ValidationError, "environment.appendable"
+            ):
+                Catalog._validate_component(value, "dbeaver", path)
 
     def test_component_info_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2347,6 +2450,54 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual("d" * 128, artifact.checksum)
             self.assertIsNone(artifact.sha256)
 
+            component.provider("apache")["resolver"] = {
+                "type": "apache-directory",
+                "indexUrl": index_url,
+                "downloadBaseUrl": "https://downloads.example/maven-3",
+            }
+            legacy_artifact = resolve_component(
+                component, "apache", 3, client
+            )
+            self.assertEqual(artifact, legacy_artifact)
+
+    def test_resolves_latest_tomcat_base_zip_with_sha512(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = tomcat_component(
+                Path(temporary) / "tomcat.json"
+            )
+            index_url = (
+                "https://downloads.example/tomcat/tomcat-11/"
+            )
+            archive_url = (
+                "https://downloads.example/tomcat/tomcat-11/"
+                "v11.0.25/bin/apache-tomcat-11.0.25.zip"
+            )
+            client = FakeTextHttpClient(
+                {
+                    index_url: (
+                        '<a href="v11.0.24/">v11.0.24/</a>'
+                        '<a href="v11.0.25/">v11.0.25/</a>'
+                        '<a href="v12.0.0-M1/">preview</a>'
+                    ),
+                    f"{archive_url}.sha512": (
+                        ("e" * 128)
+                        + "  apache-tomcat-11.0.25.zip\n"
+                    ),
+                }
+            )
+
+            artifact = resolve_component(
+                component, "apache", 11, client
+            )
+
+            self.assertEqual("11.0.25", artifact.version)
+            self.assertEqual(
+                "apache-tomcat-11.0.25.zip", artifact.file_name
+            )
+            self.assertEqual("sha512", artifact.checksum_algorithm)
+            self.assertEqual("e" * 128, artifact.sha512)
+            self.assertEqual(archive_url, artifact.url)
+
     def test_resolves_git_for_windows_mingit_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             component = git_component(Path(temporary) / "git.json")
@@ -3346,6 +3497,36 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual("local", environment["SHARED_TOKEN"])
             self.assertEqual("private", environment["PROJECT_TOKEN"])
 
+    def test_inactive_component_does_not_reserve_configured_variables(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            paths.config.write_text(
+                "env.JAVA_HOME=C:\\Configured\\Java\n",
+                encoding="utf-8",
+            )
+            store = EnvironmentStore(paths)
+            store.create("default")
+            catalog = Catalog(
+                paths,
+                {},
+                {
+                    "java": java_component(
+                        paths.components / "java.json"
+                    )
+                },
+            )
+
+            environment = store.build_process_environment(
+                "default", catalog
+            )
+
+            self.assertEqual(
+                "C:\\Configured\\Java", environment["JAVA_HOME"]
+            )
+
     def test_windows_trust_is_profile_scoped_and_published(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             paths = EapPaths.from_root(Path(temporary))
@@ -3709,8 +3890,14 @@ class EnvironmentTests(unittest.TestCase):
             root = Path(temporary)
             paths = EapPaths.from_root(root)
             paths.ensure_layout()
+            paths.config.write_text(
+                "env.JAVA_TOOL_OPTIONS=-Duser.language=en "
+                "-Duser.country=US\n",
+                encoding="utf-8",
+            )
             manifest = paths.components / "java_eap_component.json"
             component = java_component(manifest)
+            component.value["environment"].pop("appendable")
             catalog = Catalog(paths, {}, {"java": component})
             store = EnvironmentStore(paths)
             store.create("default")
@@ -3766,6 +3953,20 @@ class EnvironmentTests(unittest.TestCase):
             self.assertIn(
                 f'-Duser.home="{home}"',
                 environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertIn(
+                "-Duser.language=en -Duser.country=US",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertNotIn(
+                "-Duser.home=C:\\Host",
+                environment["JAVA_TOOL_OPTIONS"],
+            )
+            self.assertLess(
+                environment["JAVA_TOOL_OPTIONS"].index(
+                    "-Duser.language=en"
+                ),
+                environment["JAVA_TOOL_OPTIONS"].index("-Duser.home="),
             )
             self.assertEqual(
                 str(install_path / "bin"),

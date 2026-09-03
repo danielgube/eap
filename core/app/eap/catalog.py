@@ -367,6 +367,7 @@ class Catalog:
             "application",
             "external",
             "runtime",
+            "server",
             "service",
             "tool",
         }:
@@ -613,6 +614,7 @@ class Catalog:
             raise ValidationError(f"environment debe ser un objeto en {path}")
         variables = environment.get("variables")
         unset_variables = environment.get("unset", [])
+        appendable_variables = environment.get("appendable", [])
         path_entries = environment.get("path")
         data_path_entries = environment.get("dataPath", [])
         commands = environment.get("commands", [])
@@ -630,6 +632,22 @@ class Catalog:
                 raise ValidationError(
                     f"Variable de entorno no válida en {path}"
                 )
+        if (
+            not isinstance(appendable_variables, list)
+            or not all(
+                isinstance(name, str)
+                and name
+                and "=" not in name
+                and name in variables
+                for name in appendable_variables
+            )
+            or len({name.casefold() for name in appendable_variables})
+            != len(appendable_variables)
+        ):
+            raise ValidationError(
+                "environment.appendable debe contener nombres únicos "
+                f"de environment.variables en {path}"
+            )
         if not isinstance(unset_variables, list) or not all(
             isinstance(name, str) and name and "=" not in name
             for name in unset_variables
@@ -756,6 +774,8 @@ class Catalog:
                 )
             if resolver.get("type") == "json-index":
                 Catalog._validate_json_index_resolver(resolver, path)
+            if resolver.get("type") == "html-directory":
+                Catalog._validate_html_directory_resolver(resolver, path)
             if (
                 value["kind"] == "external"
                 and resolver.get("type") != "external-executable"
@@ -830,7 +850,7 @@ class Catalog:
             raise ValidationError(
                 f"indexUrl de json-index no es válida en {path}"
             )
-        Catalog._validate_json_resolver_template(
+        Catalog._validate_resolver_template(
             index_url, {"track"}, "indexUrl", path
         )
 
@@ -912,7 +932,7 @@ class Catalog:
                 raise ValidationError(
                     f"urlTemplate de json-index no es válida en {path}"
                 )
-            Catalog._validate_json_resolver_template(
+            Catalog._validate_resolver_template(
                 url_template,
                 {"track", "version", "fileName"},
                 "artifacts.urlTemplate",
@@ -945,7 +965,7 @@ class Catalog:
             raise ValidationError(
                 f"{label} de json-index no es una ruta válida en {manifest_path}"
             )
-        Catalog._validate_json_resolver_template(
+        Catalog._validate_resolver_template(
             value, {"track"}, label, manifest_path
         )
         for segment in value[1:].split("/") if value != "/" else []:
@@ -978,12 +998,12 @@ class Catalog:
                     f"en {manifest_path}"
                 )
             if isinstance(expected, str):
-                Catalog._validate_json_resolver_template(
+                Catalog._validate_resolver_template(
                     expected, {"track"}, label, manifest_path
                 )
 
     @staticmethod
-    def _validate_json_resolver_template(
+    def _validate_resolver_template(
         value: str,
         allowed_tokens: set[str],
         label: str,
@@ -999,8 +1019,79 @@ class Catalog:
             or "}" in without_tokens
         ):
             raise ValidationError(
-                f"{label} de json-index usa tokens no soportados en "
+                f"{label} usa tokens no soportados en "
                 f"{manifest_path}"
+            )
+
+    @staticmethod
+    def _validate_html_directory_resolver(
+        resolver: dict[str, Any], path: Path
+    ) -> None:
+        require_fields(
+            resolver,
+            (
+                "indexUrl",
+                "releasePattern",
+                "artifactUrlTemplate",
+                "checksumUrlTemplate",
+                "checksumAlgorithm",
+            ),
+            f"resolver html-directory de {path}",
+        )
+        for field, allowed_tokens in (
+            ("indexUrl", {"track"}),
+            ("artifactUrlTemplate", {"track", "version"}),
+        ):
+            value = resolver[field]
+            if (
+                not isinstance(value, str)
+                or len(value) > 2048
+                or not value.startswith("https://")
+            ):
+                raise ValidationError(
+                    f"{field} de html-directory no es válida en {path}"
+                )
+            Catalog._validate_resolver_template(
+                value, allowed_tokens, field, path
+            )
+        checksum_template = resolver["checksumUrlTemplate"]
+        if (
+            not isinstance(checksum_template, str)
+            or len(checksum_template) > 2048
+            or not checksum_template.startswith(
+                ("https://", "{artifactUrl}")
+            )
+        ):
+            raise ValidationError(
+                "checksumUrlTemplate de html-directory no es válida en "
+                f"{path}"
+            )
+        Catalog._validate_resolver_template(
+            checksum_template,
+            {"track", "version", "fileName", "artifactUrl"},
+            "checksumUrlTemplate",
+            path,
+        )
+        pattern_text = resolver["releasePattern"]
+        if not isinstance(pattern_text, str) or len(pattern_text) > 512:
+            raise ValidationError(
+                f"releasePattern de html-directory no es válido en {path}"
+            )
+        try:
+            pattern = re.compile(pattern_text, flags=re.IGNORECASE)
+        except re.error as exc:
+            raise ValidationError(
+                f"releasePattern de html-directory no es válido en {path}"
+            ) from exc
+        if "version" not in pattern.groupindex:
+            raise ValidationError(
+                "releasePattern de html-directory debe declarar el grupo "
+                f"(?P<version>...) en {path}"
+            )
+        if resolver["checksumAlgorithm"] not in {"sha256", "sha512"}:
+            raise ValidationError(
+                "checksumAlgorithm de html-directory debe ser sha256 o "
+                f"sha512 en {path}"
             )
 
     @staticmethod
