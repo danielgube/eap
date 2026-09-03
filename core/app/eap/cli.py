@@ -2288,7 +2288,7 @@ def _interactive_install_new_component(
             for component in app.catalog.definitions.values()
             if not component.is_external
         ),
-        key=lambda item: item.display_name.casefold(),
+        key=_install_component_sort_key,
     )
     if not available:
         _print_panel(
@@ -2309,23 +2309,44 @@ def _interactive_install_new_component(
     payloads_by_id: dict[str, list[Any]] = {}
     for payload in payloads:
         payloads_by_id.setdefault(str(payload.component_id), []).append(payload)
-    rows: list[str] = []
+    grouped_rows: dict[str, list[list[str]]] = {}
+    category_labels: dict[str, str] = {}
     for index, component in enumerate(available, start=1):
         active = active_by_id.get(component.id)
         if active is not None:
-            state = f"activo · {active['version']}"
+            state = "Activo"
+            version = str(active["version"])
         elif component.id in payloads_by_id:
-            state = "descargado · inactivo"
+            state = "Descargado · inactivo"
+            version = _downloaded_component_versions(
+                payloads_by_id[component.id]
+            )
         else:
-            state = "no instalado"
-        rows.append(
-            f"[{index}] {component.display_name} · {state} · "
-            f"Fuente: {_component_source_label(component)}"
+            state = "No instalado"
+            version = "--"
+        category_id, category_label = _component_category(component)
+        category_labels[category_id] = category_label
+        grouped_rows.setdefault(category_id, []).append(
+            [
+                f"[{index}]",
+                component.display_name,
+                state,
+                version,
+                _component_catalog_description(component),
+                _component_repository_id(component),
+            ]
         )
-    rows.append("[Esc] Volver")
+    sections = [
+        (
+            f"{category_labels[category_id]} ({len(rows)})",
+            _install_component_table_rows(rows),
+        )
+        for category_id, rows in grouped_rows.items()
+    ]
+    sections.append(("Acciones", ["[Esc] Volver"]))
     _print_panel(
         "Catálogo > Instalar componente",
-        [("Todos los componentes", rows)],
+        sections,
     )
     selected_index = _read_index(len(available))
     if selected_index is None:
@@ -2353,6 +2374,135 @@ def _interactive_install_new_component(
         previous=update_status,
         announce=False,
     )
+
+
+_COMPONENT_CATEGORY_LABELS = {
+    "runtimes": "Runtimes",
+    "servers": "Servidores",
+    "build-tools": "Herramientas de construcción",
+    "version-control": "Control de versiones",
+    "applications": "Aplicaciones",
+    "services": "Servicios",
+    "tools": "Herramientas",
+}
+
+_COMPONENT_KIND_CATEGORIES = {
+    "runtime": "runtimes",
+    "server": "servers",
+    "tool": "tools",
+    "application": "applications",
+    "service": "services",
+}
+
+_COMPONENT_CATEGORY_ORDER = {
+    "runtimes": 0,
+    "servers": 1,
+    "build-tools": 2,
+    "version-control": 3,
+    "applications": 4,
+    "services": 5,
+    "tools": 6,
+}
+
+
+def _component_category(component: Any) -> tuple[str, str]:
+    raw_category = component.value.get("category")
+    if isinstance(raw_category, str) and raw_category.strip():
+        category_id = raw_category.strip().casefold()
+    else:
+        category_id = _COMPONENT_KIND_CATEGORIES.get(
+            str(component.kind).casefold(),
+            str(component.kind).casefold(),
+        )
+    label = _COMPONENT_CATEGORY_LABELS.get(
+        category_id,
+        category_id.replace("-", " ").capitalize(),
+    )
+    return category_id, label
+
+
+def _install_component_sort_key(component: Any) -> tuple[int, str, str]:
+    category_id, category_label = _component_category(component)
+    return (
+        _COMPONENT_CATEGORY_ORDER.get(category_id, 99),
+        category_label.casefold(),
+        component.display_name.casefold(),
+    )
+
+
+def _component_catalog_description(component: Any) -> str:
+    description = component.value.get("description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    return str(component.information_description)
+
+
+def _downloaded_component_versions(payloads: list[Any]) -> str:
+    versions = list(
+        dict.fromkeys(
+            str(payload.version)
+            for payload in payloads
+            if getattr(payload, "version", None)
+        )
+    )
+    return ", ".join(versions) if versions else "--"
+
+
+def _install_component_table_rows(rows: list[list[str]]) -> list[str]:
+    headers = [
+        "ID",
+        "Componente",
+        "Estado",
+        "Versión",
+        "Descripción",
+        "Fuente",
+    ]
+    available = _terminal_panel_width() - 4
+    gap = "  "
+    minimums = [4, 18, 21, len("Versión"), 18, len("Fuente")]
+    minimum_width = sum(minimums) + len(gap) * (len(headers) - 1)
+    if available < minimum_width:
+        compact: list[str] = []
+        for component_id, name, state, version, description, source in rows:
+            version_suffix = f" · {version}" if version != "--" else ""
+            compact.extend(
+                [
+                    f"{component_id} {name} · {state}{version_suffix}",
+                    f"    {description}",
+                    f"    Fuente: {source}",
+                ]
+            )
+        return compact
+
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(headers)
+    ]
+    while sum(widths) + len(gap) * (len(headers) - 1) > available:
+        candidates = [
+            index
+            for index in (4, 1, 2, 3, 5)
+            if widths[index] > minimums[index]
+        ]
+        if not candidates:
+            break
+        selected = max(
+            candidates,
+            key=lambda index: widths[index] - minimums[index],
+        )
+        widths[selected] -= 1
+
+    def render(values: list[str]) -> str:
+        return gap.join(
+            _fit_text(value, widths[index]).ljust(widths[index])
+            for index, value in enumerate(values)
+        ).rstrip()
+
+    return [
+        render(headers),
+        render(["─" * width for width in widths]),
+        *(render(row) for row in rows),
+    ]
 
 
 def _interactive_add_external_component(

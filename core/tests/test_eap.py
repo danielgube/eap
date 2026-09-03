@@ -6672,6 +6672,14 @@ class InterfaceTests(unittest.TestCase):
             paths.ensure_layout()
             java = java_component(paths.temp / "java.json")
             maven = maven_component(paths.temp / "maven.json")
+            java.value["category"] = "runtimes"
+            java.value["description"] = (
+                "Distribuciones OpenJDK portables para Windows"
+            )
+            maven.value["category"] = "build-tools"
+            maven.value["description"] = (
+                "Construcción y gestión de dependencias para Java"
+            )
             active = {
                 "id": "java",
                 "provider": "temurin",
@@ -6694,7 +6702,12 @@ class InterfaceTests(unittest.TestCase):
             returned_status = {**status, "opened": "java"}
             output = StringIO()
             with (
-                patch.object(cli_module, "_read_input", return_value="2"),
+                patch.object(cli_module, "_read_input", return_value="1"),
+                patch.object(
+                    cli_module.shutil,
+                    "get_terminal_size",
+                    return_value=os.terminal_size((180, 24)),
+                ),
                 patch.object(
                     cli_module,
                     "_interactive_component_actions",
@@ -6711,9 +6724,53 @@ class InterfaceTests(unittest.TestCase):
                 app, "default", active, status
             )
             rendered = output.getvalue()
-            self.assertIn("Apache Maven · no instalado", rendered)
-            self.assertIn("Java JDK · activo · 21.0.12+8", rendered)
-            self.assertIn("Todos los componentes", rendered)
+            self.assertIn("Runtimes (1)", rendered)
+            self.assertIn("Herramientas de construcción (1)", rendered)
+            self.assertIn("Componente", rendered)
+            self.assertIn("Estado", rendered)
+            self.assertIn("Descripción", rendered)
+            self.assertIn("Fuente", rendered)
+            self.assertIn("[1]  Java JDK", rendered)
+            self.assertIn("Activo", rendered)
+            self.assertIn("21.0.12+8", rendered)
+            self.assertIn(
+                "Distribuciones OpenJDK portables para Windows", rendered
+            )
+            self.assertIn("[2]  Apache Maven", rendered)
+            self.assertIn("No instalado", rendered)
+            self.assertIn(
+                "Construcción y gestión de dependencias para Java", rendered
+            )
+            self.assertIn("bootstrap", rendered)
+
+    def test_install_component_table_uses_detailed_compact_layout_when_narrow(
+        self,
+    ) -> None:
+        rows = [
+            [
+                "[1]",
+                "Apache Maven",
+                "No instalado",
+                "--",
+                "Construcción y gestión de dependencias para Java",
+                "danielgube",
+            ]
+        ]
+        with patch.object(
+            cli_module.shutil,
+            "get_terminal_size",
+            return_value=os.terminal_size((60, 24)),
+        ):
+            rendered = cli_module._install_component_table_rows(rows)
+
+        self.assertEqual(
+            [
+                "[1] Apache Maven · No instalado",
+                "    Construcción y gestión de dependencias para Java",
+                "    Fuente: danielgube",
+            ],
+            rendered,
+        )
 
     def test_page_start_clears_terminal_and_renders_breadcrumb(self) -> None:
         output = TtyStringIO()
