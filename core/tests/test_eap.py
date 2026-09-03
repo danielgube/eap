@@ -6870,7 +6870,7 @@ class InterfaceTests(unittest.TestCase):
                 "danielgube",
                 "25",
                 "Sí",
-                "",
+                "[1r]",
                 "[1i]",
             ],
             [
@@ -6911,6 +6911,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertIn("Java JDK · 21", visible)
         self.assertIn("Node.js · 24", visible)
         self.assertIn("\x1b[33m[1]\x1b[0m", colored)
+        self.assertIn("\x1b[33m[1r]\x1b[0m", colored)
         self.assertIn("\x1b[33m[1i]\x1b[0m", colored)
 
     def test_panel_color_is_suppressed_when_output_is_redirected(self) -> None:

@@ -3627,7 +3627,7 @@ def _style(text: str, color: str, stream: Any | None = None) -> str:
 def _colorize_panel_row(row: str, content: str) -> str:
     if not _COLOR_ENABLED or not _stream_is_terminal(sys.stdout):
         return row
-    marker_pattern = re.compile(r"\[(?:\d+i?|[A-Z]{1,2}|Esc)\]")
+    marker_pattern = re.compile(r"\[(?:\d+[ir]?|[A-Z]{1,2}|Esc)\]")
     if content.startswith("┌─"):
         colored = _style(row, _ANSI_CYAN)
         return marker_pattern.sub(
