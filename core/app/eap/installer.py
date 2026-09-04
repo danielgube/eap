@@ -4,10 +4,8 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import uuid
-import zipfile
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -26,18 +24,9 @@ from .util import (
     validate_id,
     validate_version,
 )
+from .zip_extraction import validate_zip_archive, verify_extracted_zip
 
 StatusCallback = Callable[[str], None]
-
-_WINDOWS_RESERVED = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    *(f"COM{number}" for number in range(1, 10)),
-    *(f"LPT{number}" for number in range(1, 10)),
-}
-
 
 class ComponentInstaller:
     def __init__(
@@ -181,7 +170,12 @@ class ComponentInstaller:
                 pass
             raise
         finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
+            # Do not walk a failed extraction from the EAP process. Endpoint
+            # protection may still be handling one of those files and can
+            # terminate the process that touches it. Failed staging is temp
+            # data and can be removed later with the normal temp cleanup.
+            if journal["state"] == "completed":
+                shutil.rmtree(staging_root, ignore_errors=True)
 
     def _target_path(
         self, component: ComponentDefinition, artifact: ResolvedArtifact
@@ -391,69 +385,43 @@ class ComponentInstaller:
             else self.settings.get_int("install.maxExtractBytes", minimum=1)
         )
         max_ratio = self.settings.get_int("install.maxCompressionRatio", minimum=1)
-        total = 0
-        with zipfile.ZipFile(archive, "r") as source:
-            entries = source.infolist()
-            for entry in entries:
-                relative = self._validate_zip_entry(entry)
-                total += entry.file_size
-                if total > max_bytes:
-                    raise IntegrityError(
-                        "El tamaño extraído supera install.maxExtractBytes"
-                    )
-                if entry.file_size and entry.compress_size == 0:
-                    raise IntegrityError(
-                        f"Entrada ZIP con ratio inválido: {entry.filename}"
-                    )
-                if (
-                    entry.compress_size
-                    and entry.file_size / entry.compress_size > max_ratio
-                ):
-                    raise IntegrityError(
-                        f"Entrada ZIP supera el ratio permitido: {entry.filename}"
-                    )
-                target = destination.joinpath(*relative.parts)
-                self._ensure_destination(destination, target)
+        validate_zip_archive(archive, destination, max_bytes, max_ratio)
 
-            for entry in entries:
-                relative = self._validate_zip_entry(entry)
-                target = destination.joinpath(*relative.parts)
-                if entry.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with source.open(entry, "r") as input_stream, target.open(
-                    "wb"
-                ) as output_stream:
-                    shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
-
-    @staticmethod
-    def _validate_zip_entry(entry: zipfile.ZipInfo) -> PurePosixPath:
-        raw_name = entry.filename.replace("\\", "/")
-        relative = PurePosixPath(raw_name)
-        if relative.is_absolute() or not relative.parts:
-            raise IntegrityError(f"Ruta ZIP absoluta o vacía: {entry.filename}")
-        if any(part in {"", ".", ".."} for part in relative.parts):
-            raise IntegrityError(f"Path traversal en ZIP: {entry.filename}")
-        for part in relative.parts:
-            stem = part.split(".", 1)[0].upper()
-            if stem in _WINDOWS_RESERVED or part.endswith((" ", ".")):
-                raise IntegrityError(
-                    f"Nombre no permitido en Windows: {entry.filename}"
-                )
-            if ":" in part:
-                raise IntegrityError(f"Ruta ZIP con unidad: {entry.filename}")
-        mode = entry.external_attr >> 16
-        if stat.S_ISLNK(mode):
-            raise IntegrityError(f"Enlace simbólico no permitido: {entry.filename}")
-        return relative
-
-    @staticmethod
-    def _ensure_destination(root: Path, target: Path) -> None:
+        seven_zip = self.paths.core / "tools" / "7zip" / "7z.exe"
+        if not seven_zip.is_file():
+            raise TransactionError(f"No se encuentra 7-Zip: {seven_zip}")
+        command = [
+            str(seven_zip),
+            "x",
+            "-bd",
+            "-bb0",
+            "-y",
+            "-sccUTF-8",
+            f"-o{destination}",
+            str(archive),
+        ]
         try:
-            target.resolve().relative_to(root.resolve())
-        except ValueError as exc:
-            raise IntegrityError(f"La extracción sale de staging: {target}") from exc
+            completed = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            raise IntegrityError(
+                f"No se pudo iniciar el proceso de extracción: {exc}"
+            ) from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.strip()
+            if not detail:
+                detail = f"código {completed.returncode}"
+            raise IntegrityError(f"7-Zip no pudo descomprimir el archivo: {detail}")
+
+        verify_extracted_zip(archive, destination)
 
     @staticmethod
     def _select_candidate_root(

@@ -3390,6 +3390,15 @@ class ExtractionTests(unittest.TestCase):
             Settings(dict(DEFAULTS)),
             HttpClient(1),
         )
+        seven_zip = self.paths.core / "tools" / "7zip" / "7z.exe"
+        seven_zip.parent.mkdir(parents=True)
+        shutil.copy2(
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "7zip"
+            / "7z.exe",
+            seven_zip,
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -3509,6 +3518,85 @@ class ExtractionTests(unittest.TestCase):
             "fixture",
             (destination / "jdk" / "bin" / "java.exe").read_text(),
         )
+
+    def test_7zip_failure_does_not_terminate_eap(self) -> None:
+        archive = self.root / "blocked.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("blocked.jar", "fixture")
+        destination = self.root / "blocked"
+        destination.mkdir()
+
+        completed = subprocess.CompletedProcess([], -1, "", "")
+        with patch(
+            "eap.installer.subprocess.run", return_value=completed
+        ):
+            with self.assertRaisesRegex(
+                IntegrityError, "7-Zip no pudo descomprimir"
+            ):
+                self.installer._safe_extract_zip(archive, destination)
+
+    def test_failed_extraction_releases_lock_without_walking_staging(self) -> None:
+        component = html_links_component(self.root / "fixture.json")
+        archive = self.paths.temp / "fixture.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("Code.exe", "fixture")
+        artifact = ResolvedArtifact(
+            family="vscode",
+            component_id="vscode-microsoft",
+            provider="microsoft",
+            provider_name="Microsoft",
+            track=1,
+            version="1.0.0",
+            url="https://example.test/fixture.zip",
+            file_name="fixture.zip",
+            sha256="a" * 64,
+            size=archive.stat().st_size,
+            metadata_url="https://example.test/releases/",
+        )
+
+        with (
+            patch.object(self.installer, "_check_disk_space"),
+            patch.object(
+                self.installer,
+                "_obtain_archive",
+                return_value=(archive, artifact),
+            ),
+            patch.object(
+                self.installer,
+                "_safe_extract_zip",
+                side_effect=IntegrityError("extractor interrumpido"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                IntegrityError, "extractor interrumpido"
+            ):
+                self.installer.install(
+                    component, artifact, process_environment={}
+                )
+
+        lock = self.paths.temp / "locks" / "install-vscode-microsoft-1.lock"
+        self.assertFalse(lock.exists())
+        [journal_path] = list((self.paths.temp / "transactions").glob("*.json"))
+        journal = load_json(journal_path)
+        self.assertEqual("failed", journal["state"])
+        staging = self.paths.temp / "staging" / journal["transactionId"]
+        self.assertTrue(staging.is_dir())
+
+    def test_rejects_file_removed_after_extraction_worker_finishes(self) -> None:
+        archive = self.root / "removed.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("removed.jar", "fixture")
+        destination = self.root / "removed"
+        destination.mkdir()
+
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with patch(
+            "eap.installer.subprocess.run", return_value=completed
+        ):
+            with self.assertRaisesRegex(
+                IntegrityError, "Falta un archivo tras la extracción"
+            ):
+                self.installer._safe_extract_zip(archive, destination)
 
     def test_component_can_use_a_narrow_explicit_extraction_cap(self) -> None:
         archive = self.root / "bounded.zip"
