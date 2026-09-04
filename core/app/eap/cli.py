@@ -2300,13 +2300,32 @@ def _interactive_install_new_component(
                     "",
                     [
                         "No hay componentes instalables en el catálogo.",
-                        "Pulse Intro o Esc para volver.",
+                        "Puede actualizar ahora los catálogos configurados.",
                     ],
                 )
             ],
         )
-        _read_input("> ")
-        return update_status
+        if not _confirm("¿Actualizar los catálogos ahora?"):
+            return update_status
+        print("Actualizando catálogos de componentes...")
+        catalog = app.refresh_component_catalogs()
+        print(
+            f"Catálogos actualizados: {len(catalog.definitions)} "
+            f"componente(s) · {len(catalog.sources)} repositorio(s)."
+        )
+        available = sorted(
+            (
+                component
+                for component in app.catalog.definitions.values()
+                if not component.is_external
+            ),
+            key=_install_component_sort_key,
+        )
+        if not available:
+            print("El catálogo sigue sin tener componentes instalables.")
+            _pause_after_result()
+            return update_status
+        _start_page("Inicio > Catálogo > Instalar componente")
     payloads = app.available_component_payloads(environment_id)
     payloads_by_id: dict[str, list[Any]] = {}
     for payload in payloads:

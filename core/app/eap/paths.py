@@ -15,6 +15,7 @@ class EapPaths:
     data: Path
     envs: Path
     temp: Path
+    logs: Path
     exports: Path
     workspaces: Path
     catalog: Path
@@ -36,6 +37,7 @@ class EapPaths:
             data=resolved / "data",
             envs=resolved / "envs",
             temp=resolved / "temp",
+            logs=resolved / "logs",
             exports=resolved / "exports",
             workspaces=resolved / "workspaces",
             catalog=resolved / "core" / "catalog" / "catalog.json",
@@ -55,6 +57,7 @@ class EapPaths:
             self.data / "pocketools" / "state",
             self.envs,
             self.temp,
+            self.logs,
             self.exports,
             self.workspaces,
             self.temp / "downloads",

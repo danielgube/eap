@@ -277,6 +277,7 @@ class EnvironmentTransfer:
                         "excluded": [
                             "data",
                             "temp",
+                            "logs",
                             "exports",
                             "envs",
                             "pocketools",
@@ -478,6 +479,7 @@ class EnvironmentTransfer:
             "data",
             "envs",
             "exports",
+            "logs",
             "temp",
             "workspaces",
         }

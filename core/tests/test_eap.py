@@ -6,6 +6,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -30,6 +31,7 @@ from eap.component_repositories import (
 )
 from eap.cli import _is_escape, _render_main_dashboard
 from eap.config import DEFAULTS, Settings
+from eap.console_log import capture_console_output
 from eap.core_tools import CoreTools
 from eap.environments import EnvironmentStore
 from eap.errors import (
@@ -5422,6 +5424,28 @@ class ComponentLifecycleTests(unittest.TestCase):
 
 
 class TemporaryStorageTests(unittest.TestCase):
+    def test_console_output_is_written_immediately_to_session_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            logs = Path(temporary) / "logs"
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                with capture_console_output(logs) as log_path:
+                    self.assertIsNotNone(log_path)
+                    assert log_path is not None
+                    print("\x1b[31mmensaje visible\x1b[0m")
+                    print("mensaje de error", file=sys.stderr)
+                    current = log_path.read_text(encoding="utf-8")
+                    self.assertIn("mensaje visible", current)
+                    self.assertIn("mensaje de error", current)
+
+            self.assertIn("\x1b[31mmensaje visible\x1b[0m", stdout.getvalue())
+            self.assertIn("mensaje de error", stderr.getvalue())
+            content = log_path.read_text(encoding="utf-8")
+            self.assertNotIn("\x1b[", content)
+            self.assertIn("EAP iniciado", content)
+            self.assertIn("EAP finalizado", content)
+
     def test_usage_and_cleanup_remove_temp_contents_and_recreate_layout(
         self,
     ) -> None:
@@ -5444,6 +5468,7 @@ class TemporaryStorageTests(unittest.TestCase):
             self.assertEqual(2, result.files_removed)
             self.assertFalse(download.exists())
             self.assertFalse(log.exists())
+            self.assertTrue(paths.logs.is_dir())
             self.assertTrue((paths.temp / "downloads").is_dir())
             self.assertTrue((paths.temp / "transactions").is_dir())
 
@@ -7418,6 +7443,60 @@ class InterfaceTests(unittest.TestCase):
                 "Construcción y gestión de dependencias para Java", rendered
             )
             self.assertIn("bootstrap", rendered)
+
+    def test_empty_install_catalog_offers_refresh_and_lists_results(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            java = java_component(paths.temp / "java.json")
+            catalog = SimpleNamespace(definitions={}, sources={})
+            refreshed: list[bool] = []
+
+            app = SimpleNamespace(
+                catalog=catalog,
+                inventory=lambda environment_id: [],
+                available_component_payloads=lambda environment_id: [],
+            )
+
+            def refresh_catalogs() -> Any:
+                refreshed.append(True)
+                app.catalog = SimpleNamespace(
+                    definitions={"java": java},
+                    sources={"official": object()},
+                )
+                return app.catalog
+
+            app.refresh_component_catalogs = refresh_catalogs
+            status = {"state": "cached", "updates": []}
+            output = StringIO()
+            with (
+                patch.object(
+                    cli_module, "_read_input", side_effect=["s", "\x1b"]
+                ),
+                patch.object(
+                    cli_module.shutil,
+                    "get_terminal_size",
+                    return_value=os.terminal_size((180, 24)),
+                ),
+                redirect_stdout(output),
+            ):
+                result = cli_module._interactive_install_new_component(
+                    app, "default", status
+                )
+
+            self.assertIs(status, result)
+            self.assertEqual([True], refreshed)
+            rendered = output.getvalue()
+            self.assertIn(
+                "No hay componentes instalables en el catálogo", rendered
+            )
+            self.assertIn(
+                "Puede actualizar ahora los catálogos configurados", rendered
+            )
+            self.assertIn("Catálogos actualizados: 1 componente(s)", rendered)
+            self.assertIn("Java JDK", rendered)
 
     def test_install_component_table_uses_detailed_compact_layout_when_narrow(
         self,
