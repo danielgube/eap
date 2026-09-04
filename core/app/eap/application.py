@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +18,7 @@ from .component_repositories import (
     ComponentRepositoryManager,
     update_component_repository_property,
 )
+from .console_log import reset_active_log
 from .config import Settings, load_properties
 from .console import console_title
 from .core_tools import CoreTools
@@ -1456,8 +1459,12 @@ class EapApplication:
         return publisher.publish()
 
     def temporary_storage_usage(self) -> TemporaryStorageUsage:
-        size, files = self._storage_usage(self.paths.temp)
-        return TemporaryStorageUsage(bytes=size, files=files)
+        temp_size, temp_files = self._storage_usage(self.paths.temp)
+        log_size, log_files = self._storage_usage(self.paths.logs)
+        return TemporaryStorageUsage(
+            bytes=temp_size + log_size,
+            files=temp_files + log_files,
+        )
 
     def clean_temporary_storage(self) -> TemporaryCleanupResult:
         lock_path = self.paths.temp / "locks" / "temp-cleanup.lock"
@@ -1474,33 +1481,67 @@ class EapApplication:
                     "No se pueden limpiar los temporales mientras hay "
                     "operaciones activas: " + ", ".join(active_locks)
                 )
-            for entry in self.paths.temp.iterdir():
-                if entry == lock_path.parent:
-                    continue
-                size, files = self._storage_usage(entry)
-                try:
-                    if entry.is_symlink() or not entry.is_dir():
-                        entry.unlink()
-                    else:
-                        resolved = self.paths.require_within_root(entry)
-                        try:
-                            resolved.relative_to(self.paths.temp)
-                        except ValueError as exc:
-                            raise ValidationError(
-                                f"Temporal fuera de temp: {resolved}"
-                            ) from exc
-                        shutil.rmtree(resolved)
-                except OSError as exc:
-                    raise TransactionError(
-                        f"No se pudo eliminar el temporal {entry}"
-                    ) from exc
-                bytes_removed += size
-                files_removed += files
+            active_log, active_log_bytes = reset_active_log(self.paths.logs)
+            bytes_removed += active_log_bytes
+            for storage_root in (self.paths.temp, self.paths.logs):
+                for entry in storage_root.iterdir():
+                    if entry == lock_path.parent or entry == active_log:
+                        continue
+                    size, files = self._storage_usage(entry)
+                    try:
+                        if entry.is_symlink() or not entry.is_dir():
+                            entry.unlink()
+                        else:
+                            resolved = self.paths.require_within_root(entry)
+                            try:
+                                resolved.relative_to(storage_root)
+                            except ValueError as exc:
+                                raise ValidationError(
+                                    "Contenido fuera del almacenamiento "
+                                    f"temporal: {resolved}"
+                                ) from exc
+                            self._remove_temporary_tree(resolved)
+                    except OSError as exc:
+                        raise TransactionError(
+                            f"No se pudo eliminar el temporal {entry}: {exc}"
+                        ) from exc
+                    bytes_removed += size
+                    files_removed += files
             self.paths.ensure_layout()
         return TemporaryCleanupResult(
             bytes_removed=bytes_removed,
             files_removed=files_removed,
         )
+
+    @staticmethod
+    def _remove_temporary_tree(path: Path) -> None:
+        delays = (0.1, 0.25, 0.5, 1.0, 2.0)
+        for attempt, delay in enumerate(delays, start=1):
+            try:
+                shutil.rmtree(
+                    path,
+                    onerror=EapApplication._clear_readonly_and_retry,
+                )
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError:
+                if attempt == len(delays):
+                    raise
+                time.sleep(delay)
+
+    @staticmethod
+    def _clear_readonly_and_retry(
+        function: Callable[[str], Any],
+        path: str,
+        error_info: tuple[type[BaseException], BaseException, Any],
+    ) -> None:
+        error = error_info[1]
+        if not isinstance(error, PermissionError):
+            raise error
+        current_mode = os.stat(path, follow_symlinks=False).st_mode
+        os.chmod(path, current_mode | stat.S_IWRITE)
+        function(path)
 
     @staticmethod
     def _storage_usage(path: Path) -> tuple[int, int]:

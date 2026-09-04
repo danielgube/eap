@@ -13,6 +13,10 @@ from typing import Any, Iterator, TextIO
 
 
 _ANSI_SEQUENCE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_ACTIVE_STATE_LOCK = threading.Lock()
+_active_log_path: Path | None = None
+_active_log: TextIO | None = None
+_active_write_lock: threading.Lock | None = None
 
 
 class _TeeStream:
@@ -71,8 +75,36 @@ class _TeeStream:
         return getattr(self.original, name)
 
 
+def reset_active_log(log_directory: Path) -> tuple[Path | None, int]:
+    """Empty the current session log when its directory is being cleaned."""
+    with _ACTIVE_STATE_LOCK:
+        path = _active_log_path
+        log = _active_log
+        write_lock = _active_write_lock
+    if path is None or log is None or write_lock is None:
+        return None, 0
+    try:
+        if path.parent.resolve() != log_directory.resolve():
+            return None, 0
+        previous_size = path.stat().st_size
+        with write_lock:
+            log.seek(0)
+            log.truncate()
+            reset_at = datetime.now().astimezone()
+            log.write(
+                "=== Log reiniciado al limpiar temporales "
+                f"{reset_at.isoformat(timespec='seconds')} "
+                f"· PID {os.getpid()} ===\n"
+            )
+            log.flush()
+        return path, previous_size
+    except OSError:
+        return path, 0
+
+
 @contextmanager
 def capture_console_output(log_directory: Path) -> Iterator[Path | None]:
+    global _active_log_path, _active_log, _active_write_lock
     try:
         log_directory.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now().astimezone()
@@ -103,6 +135,10 @@ def capture_console_output(log_directory: Path) -> Iterator[Path | None]:
 
     sys.stdout = _TeeStream(original_stdout, log, lock)
     sys.stderr = _TeeStream(original_stderr, log, lock)
+    with _ACTIVE_STATE_LOCK:
+        _active_log_path = log_path
+        _active_log = log
+        _active_write_lock = lock
     try:
         yield log_path
     except Exception:
@@ -111,6 +147,10 @@ def capture_console_output(log_directory: Path) -> Iterator[Path | None]:
         log.flush()
         raise
     finally:
+        with _ACTIVE_STATE_LOCK:
+            _active_log_path = None
+            _active_log = None
+            _active_write_lock = None
         try:
             sys.stdout.flush()
             sys.stderr.flush()

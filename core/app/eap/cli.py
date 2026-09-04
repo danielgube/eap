@@ -821,6 +821,7 @@ def dispatch(app: EapApplication, arguments: argparse.Namespace) -> int:
                 f"Temporales: {_format_bytes(usage.bytes)} · "
                 f"{usage.files} archivo(s) · {app.paths.temp}"
             )
+            print(f"Logs: {app.paths.logs}")
             if not arguments.yes and not _confirm(
                 "¿Eliminar todos los temporales de EAP?"
             ):
@@ -5004,7 +5005,8 @@ def _interactive_clean_temporary_storage(app: EapApplication) -> None:
             (
                 "Almacenamiento",
                 [
-                    f"Ruta: {app.paths.temp}",
+                    f"Temporales: {app.paths.temp}",
+                    f"Logs: {app.paths.logs}",
                     f"Tamaño: {_format_bytes(usage.bytes)}",
                     f"Archivos: {usage.files}",
                     "Se eliminarán descargas, staging, transacciones y logs.",

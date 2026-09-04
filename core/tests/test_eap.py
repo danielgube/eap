@@ -5454,23 +5454,74 @@ class TemporaryStorageTests(unittest.TestCase):
             paths.ensure_layout()
             download = paths.temp / "downloads" / "artifact.zip"
             log = paths.temp / "logs" / "eap.log"
+            session_log = paths.logs / "eap-session.log"
             download.write_bytes(b"a" * 1024)
             log.write_bytes(b"b" * 512)
+            session_log.write_bytes(b"c" * 256)
             app = EapApplication.__new__(EapApplication)
             app.paths = paths
 
             usage = app.temporary_storage_usage()
-            self.assertEqual(1536, usage.bytes)
-            self.assertEqual(2, usage.files)
+            self.assertEqual(1792, usage.bytes)
+            self.assertEqual(3, usage.files)
 
             result = app.clean_temporary_storage()
-            self.assertEqual(1536, result.bytes_removed)
-            self.assertEqual(2, result.files_removed)
+            self.assertEqual(1792, result.bytes_removed)
+            self.assertEqual(3, result.files_removed)
             self.assertFalse(download.exists())
             self.assertFalse(log.exists())
+            self.assertFalse(session_log.exists())
             self.assertTrue(paths.logs.is_dir())
             self.assertTrue((paths.temp / "downloads").is_dir())
             self.assertTrue((paths.temp / "transactions").is_dir())
+
+    def test_cleanup_resets_active_log_and_removes_older_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            old_log = paths.logs / "old.log"
+            old_log.write_text("registro anterior", encoding="utf-8")
+            app = EapApplication.__new__(EapApplication)
+            app.paths = paths
+
+            with redirect_stdout(StringIO()):
+                with capture_console_output(paths.logs) as active_log:
+                    assert active_log is not None
+                    print("mensaje anterior a la limpieza")
+                    result = app.clean_temporary_storage()
+                    print("mensaje posterior a la limpieza")
+
+            self.assertFalse(old_log.exists())
+            self.assertTrue(active_log.is_file())
+            content = active_log.read_text(encoding="utf-8")
+            self.assertNotIn("mensaje anterior", content)
+            self.assertIn("mensaje posterior", content)
+            self.assertGreater(result.bytes_removed, 0)
+
+    def test_cleanup_removes_readonly_git_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = EapPaths.from_root(Path(temporary))
+            paths.ensure_layout()
+            diagnostics = (
+                paths.temp
+                / "diagnostics"
+                / "catalog"
+                / ".git"
+                / "objects"
+                / "pack"
+            )
+            diagnostics.mkdir(parents=True)
+            readonly = diagnostics / "catalog.pack"
+            readonly.write_bytes(b"pack")
+            readonly.chmod(readonly.stat().st_mode & ~stat.S_IWRITE)
+            app = EapApplication.__new__(EapApplication)
+            app.paths = paths
+
+            result = app.clean_temporary_storage()
+
+            self.assertFalse((paths.temp / "diagnostics").exists())
+            self.assertEqual(4, result.bytes_removed)
+            self.assertEqual(1, result.files_removed)
 
     def test_cleanup_refuses_to_run_while_an_operation_lock_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -8113,7 +8164,9 @@ class InterfaceTests(unittest.TestCase):
 
     def test_cli_cleans_temporary_storage(self) -> None:
         app = SimpleNamespace(
-            paths=SimpleNamespace(temp=Path(r"C:\eap\temp")),
+            paths=SimpleNamespace(
+                temp=Path(r"C:\eap\temp"), logs=Path(r"C:\eap\logs")
+            ),
             temporary_storage_usage=lambda: SimpleNamespace(
                 bytes=1536, files=2
             ),
