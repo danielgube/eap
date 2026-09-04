@@ -7129,16 +7129,22 @@ class InterfaceTests(unittest.TestCase):
             )
 
             entries = cli_module._profile_component_entries(app, "default")
-            [(_, rows)] = cli_module._inventory_sections(
-                app,
-                "default",
-                entries,
-                {"updates": []},
-                numbered=True,
-            )
+            with patch.object(
+                cli_module.shutil,
+                "get_terminal_size",
+                return_value=os.terminal_size((180, 24)),
+            ):
+                [(_, rows)] = cli_module._inventory_sections(
+                    app,
+                    "default",
+                    entries,
+                    {"updates": []},
+                    numbered=True,
+                )
             rendered = "\n".join(rows)
 
             self.assertIn("Repositorio", rendered)
+            self.assertIn("Categoría", rendered)
             self.assertIn("Tipo", rendered)
             self.assertIn("Active", rendered)
             self.assertIn("Run", rendered)
@@ -7154,6 +7160,7 @@ class InterfaceTests(unittest.TestCase):
             component = dbeaver_component(
                 Path(temporary) / "dbeaver.json"
             )
+            component.value["category"] = "database-clients"
             launcher = SimpleNamespace(
                 id="dbeaver", component_id="dbeaver"
             )
@@ -7172,15 +7179,21 @@ class InterfaceTests(unittest.TestCase):
                 }
             ]
 
-            [(_, rows)] = cli_module._inventory_sections(
-                app,
-                "default",
-                inventory,
-                {"state": "done", "updates": []},
-                numbered=True,
-            )
+            with patch.object(
+                cli_module.shutil,
+                "get_terminal_size",
+                return_value=os.terminal_size((180, 24)),
+            ):
+                [(_, rows)] = cli_module._inventory_sections(
+                    app,
+                    "default",
+                    inventory,
+                    {"state": "done", "updates": []},
+                    numbered=True,
+                )
             rendered = "\n".join(rows)
 
+            self.assertIn("Clientes BBDD", rendered)
             self.assertIn("application", rendered)
             self.assertIn("[1r]", rendered)
 
@@ -7440,6 +7453,7 @@ class InterfaceTests(unittest.TestCase):
             [
                 "[1]",
                 "Java JDK · 21",
+                "Runtimes",
                 "runtime",
                 "Eclipse Temurin",
                 "danielgube",
@@ -7451,6 +7465,7 @@ class InterfaceTests(unittest.TestCase):
             [
                 "[2]",
                 "Node.js · 24",
+                "Runtimes",
                 "runtime",
                 "Node.js Foundation",
                 "danielgube",
@@ -9086,6 +9101,7 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn("┌─ Componentes (3)", rendered)
             self.assertIn("ID", rendered)
             self.assertIn("Nombre", rendered)
+            self.assertIn("Categoría", rendered)
             self.assertIn("Tipo", rendered)
             self.assertIn("Proveedor", rendered)
             self.assertIn("Repositorio", rendered)

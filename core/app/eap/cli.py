@@ -1794,6 +1794,7 @@ def _inventory_sections(
             [
                 f"[{index}]" if numbered else str(index),
                 f"{component.display_name} · {item['version']}{missing_marker}",
+                _component_category(component)[1],
                 component.kind,
                 str(provider["displayName"]),
                 str(
@@ -1825,6 +1826,7 @@ def _component_table_rows(rows: list[list[str]]) -> list[str]:
     headers = [
         "ID",
         "Nombre",
+        "Categoría",
         "Tipo",
         "Proveedor",
         "Repositorio",
@@ -1843,7 +1845,7 @@ def _component_table_rows(rows: list[list[str]]) -> list[str]:
     while sum(widths) + len(gap) * (len(headers) - 1) > available:
         candidates = [
             index
-            for index in (4, 3, 1, 2, 5, 6, 0, 7, 8)
+            for index in (5, 4, 1, 2, 3, 6, 7, 0, 8, 9)
             if widths[index] > minimums[index]
         ]
         if not candidates:
@@ -2381,6 +2383,10 @@ _COMPONENT_CATEGORY_LABELS = {
     "servers": "Servidores",
     "build-tools": "Herramientas de construcción",
     "version-control": "Control de versiones",
+    "database-clients": "Clientes BBDD",
+    "api-clients": "Clientes API",
+    "ides": "IDEs",
+    "code-editors": "Editores",
     "applications": "Aplicaciones",
     "services": "Servicios",
     "tools": "Herramientas",
@@ -2399,9 +2405,13 @@ _COMPONENT_CATEGORY_ORDER = {
     "servers": 1,
     "build-tools": 2,
     "version-control": 3,
-    "applications": 4,
-    "services": 5,
-    "tools": 6,
+    "database-clients": 4,
+    "api-clients": 5,
+    "ides": 6,
+    "code-editors": 7,
+    "applications": 8,
+    "services": 9,
+    "tools": 10,
 }
 
 
