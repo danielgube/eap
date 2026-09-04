@@ -8,6 +8,7 @@ import stat
 import subprocess
 import uuid
 import zipfile
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
@@ -56,7 +57,7 @@ class ComponentInstaller:
         component: ComponentDefinition,
         artifact: ResolvedArtifact,
         process_environment: dict[str, str] | None = None,
-    ) -> Path:
+    ) -> tuple[Path, ResolvedArtifact]:
         validate_id(artifact.provider, "id de proveedor")
         validate_version(artifact.version)
         lock_path = (
@@ -74,7 +75,7 @@ class ComponentInstaller:
         component: ComponentDefinition,
         artifact: ResolvedArtifact,
         process_environment: dict[str, str] | None,
-    ) -> Path:
+    ) -> tuple[Path, ResolvedArtifact]:
         transaction_id = uuid.uuid4().hex
         journal_path = (
             self.paths.temp / "transactions" / f"{transaction_id}.json"
@@ -102,21 +103,18 @@ class ComponentInstaller:
 
         transition("planned")
         try:
-            if self._is_ready(
-                target,
-                artifact.checksum_algorithm,
-                artifact.checksum,
-            ):
+            ready_artifact = self._ready_artifact(target, artifact)
+            if ready_artifact is not None:
                 self.status(f"Ya está instalado: {target}")
                 transition("completed", reused=True)
-                return target
+                return target, ready_artifact
             if target.exists():
                 raise IntegrityError(
                     f"Existe una instalación divergente en {target}; use repair"
                 )
 
             self._check_disk_space(component, artifact)
-            archive = self._obtain_archive(artifact, transition)
+            archive, artifact = self._obtain_archive(artifact, transition)
             transition("verified", archive=str(archive.relative_to(self.paths.root)))
 
             extract_root = staging_root / "extract"
@@ -148,6 +146,7 @@ class ComponentInstaller:
                 "version": artifact.version,
                 "checksumAlgorithm": artifact.checksum_algorithm,
                 "artifactChecksum": artifact.checksum,
+                "checksumOrigin": artifact.checksum_origin,
                 "installedAt": utc_now(),
                 "status": "ready",
                 "source": {
@@ -155,6 +154,8 @@ class ComponentInstaller:
                     "fileName": artifact.file_name,
                     "metadataUrl": artifact.metadata_url,
                     "size": artifact.size,
+                    "checksumOrigin": artifact.checksum_origin,
+                    "allowHttp": artifact.allow_http,
                 },
             }
             if artifact.sha256 is not None:
@@ -172,7 +173,7 @@ class ComponentInstaller:
             if not self.settings.get_bool("download.keepArchives"):
                 archive.unlink(missing_ok=True)
             transition("completed")
-            return target
+            return target, artifact
         except Exception as exc:
             try:
                 transition("failed", error=f"{type(exc).__name__}: {exc}")
@@ -222,6 +223,47 @@ class ComponentInstaller:
             f"Espacio disponible: {available / (1024 * 1024 * 1024):.1f} GiB"
         )
 
+    def _ready_artifact(
+        self, target: Path, artifact: ResolvedArtifact
+    ) -> ResolvedArtifact | None:
+        algorithm = artifact.checksum_algorithm
+        checksum = artifact.checksum
+        if (
+            algorithm is not None
+            and checksum is not None
+            and self._is_ready(target, algorithm, checksum)
+        ):
+            return artifact
+        if artifact.checksum_origin != "unavailable":
+            return None
+        state_path = target / ".eap-install.json"
+        if not target.is_dir() or not state_path.is_file():
+            return None
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        source = state.get("source")
+        observed_sha256 = str(state.get("artifactSha256", "")).casefold()
+        if (
+            state.get("status") != "ready"
+            or state.get("component") != artifact.family
+            or state.get("provider") != artifact.provider
+            or str(state.get("track")) != str(artifact.track)
+            or str(state.get("version")) != artifact.version
+            or state.get("checksumOrigin") != "downloaded"
+            or not isinstance(source, dict)
+            or source.get("url") != artifact.url
+            or source.get("fileName") != artifact.file_name
+            or re.fullmatch(r"[0-9a-f]{64}", observed_sha256) is None
+        ):
+            return None
+        return replace(
+            artifact,
+            sha256=observed_sha256,
+            checksum_origin="downloaded",
+        )
+
     @staticmethod
     def _is_ready(
         target: Path,
@@ -251,7 +293,7 @@ class ComponentInstaller:
         self,
         artifact: ResolvedArtifact,
         transition: Callable[..., None],
-    ) -> Path:
+    ) -> tuple[Path, ResolvedArtifact]:
         archive_root = (
             self.paths.temp
             / "downloads"
@@ -262,15 +304,29 @@ class ComponentInstaller:
         archive = archive_root / artifact.file_name
         partial = archive.with_suffix(archive.suffix + ".partial")
         archive_root.mkdir(parents=True, exist_ok=True)
-        if (
-            archive.is_file()
-            and hash_file(
-                archive, artifact.checksum_algorithm
-            ).lower()
-            == artifact.checksum
-        ):
-            self.status(f"Reutilizando descarga verificada: {archive.name}")
-            return archive
+        checksum_algorithm = artifact.checksum_algorithm
+        expected_checksum = artifact.checksum
+        if archive.is_file():
+            if checksum_algorithm is not None and expected_checksum is not None:
+                if (
+                    hash_file(archive, checksum_algorithm).lower()
+                    == expected_checksum
+                ):
+                    self.status(
+                        f"Reutilizando descarga verificada: {archive.name}"
+                    )
+                    return archive, artifact
+            elif artifact.checksum_origin == "unavailable":
+                observed_sha256 = hash_file(archive, "sha256").lower()
+                self.status(
+                    "Reutilizando descarga sin checksum publicado; "
+                    f"SHA256 local: {observed_sha256}"
+                )
+                return archive, replace(
+                    artifact,
+                    sha256=observed_sha256,
+                    checksum_origin="downloaded",
+                )
         archive.unlink(missing_ok=True)
         partial.unlink(missing_ok=True)
         transition("downloading")
@@ -291,21 +347,37 @@ class ComponentInstaller:
             artifact.url,
             partial,
             progress=progress,
+            allow_http=artifact.allow_http,
         )
         transition("downloaded", downloadedBytes=downloaded)
-        checksum_label = artifact.checksum_algorithm.upper()
-        self.status(f"Verificando {checksum_label}...")
-        calculated = hash_file(
-            partial, artifact.checksum_algorithm
-        ).lower()
-        if calculated != artifact.checksum:
+        if checksum_algorithm is not None and expected_checksum is not None:
+            checksum_label = checksum_algorithm.upper()
+            self.status(f"Verificando {checksum_label}...")
+            calculated = hash_file(partial, checksum_algorithm).lower()
+            if calculated != expected_checksum:
+                partial.unlink(missing_ok=True)
+                raise IntegrityError(
+                    f"{checksum_label} incorrecto: "
+                    "el archivo descargado no es el esperado"
+                )
+        elif artifact.checksum_origin == "unavailable":
+            calculated = hash_file(partial, "sha256").lower()
+            artifact = replace(
+                artifact,
+                sha256=calculated,
+                checksum_origin="downloaded",
+            )
+            self.status(
+                "Sin checksum publicado; se registra sólo el SHA256 local: "
+                f"{calculated}"
+            )
+        else:
             partial.unlink(missing_ok=True)
-            raise IntegrityError(
-                f"{checksum_label} incorrecto: "
-                "el archivo descargado no es el esperado"
+            raise ValidationError(
+                "El artefacto no tiene checksum ni declara su ausencia"
             )
         os.replace(partial, archive)
-        return archive
+        return archive, artifact
 
     def _safe_extract_zip(
         self,

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 from .errors import ValidationError
 from .paths import EapPaths
@@ -776,6 +777,13 @@ class Catalog:
                 Catalog._validate_json_index_resolver(resolver, path)
             if resolver.get("type") == "html-directory":
                 Catalog._validate_html_directory_resolver(resolver, path)
+            if resolver.get("type") == "html-links":
+                Catalog._validate_html_links_resolver(resolver, path)
+                if verification.get("type") != "none":
+                    raise ValidationError(
+                        "html-links no dispone de checksum publicado; "
+                        f"verification.type debe ser 'none' en {path}"
+                    )
             if (
                 value["kind"] == "external"
                 and resolver.get("type") != "external-executable"
@@ -1092,6 +1100,104 @@ class Catalog:
             raise ValidationError(
                 "checksumAlgorithm de html-directory debe ser sha256 o "
                 f"sha512 en {path}"
+            )
+
+    @staticmethod
+    def _validate_html_links_resolver(
+        resolver: dict[str, Any], path: Path
+    ) -> None:
+        require_fields(
+            resolver,
+            ("indexUrl", "linkPattern"),
+            f"resolver html-links de {path}",
+        )
+        index_url = resolver["indexUrl"]
+        if not isinstance(index_url, str) or len(index_url) > 2048:
+            raise ValidationError(
+                f"indexUrl de html-links no es válida en {path}"
+            )
+        Catalog._validate_resolver_template(
+            index_url, {"track"}, "indexUrl", path
+        )
+        parsed_index = urlparse(index_url.replace("{track}", "1"))
+        if (
+            parsed_index.scheme.casefold() not in {"http", "https"}
+            or not parsed_index.hostname
+        ):
+            raise ValidationError(
+                "indexUrl de html-links debe ser una URL HTTP o HTTPS "
+                f"absoluta en {path}"
+            )
+
+        pattern_text = resolver["linkPattern"]
+        if not isinstance(pattern_text, str) or len(pattern_text) > 512:
+            raise ValidationError(
+                f"linkPattern de html-links no es válido en {path}"
+            )
+        try:
+            pattern = re.compile(pattern_text)
+        except re.error as exc:
+            raise ValidationError(
+                f"linkPattern de html-links no es válido en {path}"
+            ) from exc
+        if "version" not in pattern.groupindex:
+            raise ValidationError(
+                "linkPattern de html-links debe declarar el grupo "
+                f"(?P<version>...) en {path}"
+            )
+
+        exclusions = resolver.get("excludePatterns", [])
+        if (
+            not isinstance(exclusions, list)
+            or len(exclusions) > 16
+            or not all(
+                isinstance(item, str) and len(item) <= 512
+                for item in exclusions
+            )
+        ):
+            raise ValidationError(
+                f"excludePatterns de html-links no es válido en {path}"
+            )
+        try:
+            for exclusion in exclusions:
+                re.compile(exclusion)
+        except re.error as exc:
+            raise ValidationError(
+                f"excludePatterns de html-links no es válido en {path}"
+            ) from exc
+
+        case_sensitive = resolver.get("caseSensitive", False)
+        if not isinstance(case_sensitive, bool):
+            raise ValidationError(
+                f"caseSensitive de html-links debe ser booleano en {path}"
+            )
+        follow_pattern = resolver.get("followPattern")
+        if follow_pattern is not None:
+            if (
+                not isinstance(follow_pattern, str)
+                or not follow_pattern
+                or len(follow_pattern) > 512
+            ):
+                raise ValidationError(
+                    f"followPattern de html-links no es válido en {path}"
+                )
+            try:
+                re.compile(follow_pattern)
+            except re.error as exc:
+                raise ValidationError(
+                    f"followPattern de html-links no es válido en {path}"
+                ) from exc
+        max_depth = resolver.get("maxDepth", 1)
+        if (
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or max_depth < 1
+            or max_depth > 3
+            or ("maxDepth" in resolver and follow_pattern is None)
+        ):
+            raise ValidationError(
+                "maxDepth de html-links debe estar entre 1 y 3 y requiere "
+                f"followPattern en {path}"
             )
 
     @staticmethod

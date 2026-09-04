@@ -5286,9 +5286,17 @@ def _print_resolution(artifact: Any) -> None:
     print(f"Versión exacta: {artifact.version}")
     print(f"Archivo: {artifact.file_name}")
     print(f"Tamaño: {size}")
-    print(
-        f"{artifact.checksum_algorithm.upper()}: {artifact.checksum}"
-    )
+    if artifact.checksum_origin == "downloaded":
+        print(
+            "SHA256 local (sin checksum publicado): "
+            f"{artifact.checksum}"
+        )
+    elif artifact.checksum_algorithm is None:
+        print("Checksum remoto: no publicado; se calculará SHA256 al descargar")
+    else:
+        print(
+            f"{artifact.checksum_algorithm.upper()}: {artifact.checksum}"
+        )
 
 
 def _print_updates(updates: list[UpdateInfo]) -> None:

@@ -99,6 +99,56 @@ class FakeTextHttpClient:
             raise ValidationError("HTTPS required")
 
 
+class FakeWebHttpClient:
+    def __init__(self, responses: dict[str, str | Exception]):
+        self.responses = responses
+        self.text_calls: list[tuple[str, bool]] = []
+        self.validated_urls: list[tuple[str, bool]] = []
+
+    def get_text(
+        self,
+        url: str,
+        maximum_bytes: int = 5 * 1024 * 1024,
+        *,
+        allow_http: bool = False,
+    ) -> str:
+        del maximum_bytes
+        self.text_calls.append((url, allow_http))
+        response = self.responses[url]
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def require_web_url(self, url: str, allow_http: bool = False) -> None:
+        self.validated_urls.append((url, allow_http))
+        scheme = urllib.parse.urlparse(url).scheme.casefold()
+        if scheme == "https" or (scheme == "http" and allow_http):
+            return
+        raise ValidationError("HTTP(S) required")
+
+
+class FakeDownloadHttpClient:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+        self.download_calls: list[tuple[str, bool]] = []
+
+    def download(
+        self,
+        url: str,
+        destination: Path,
+        progress: Any = None,
+        maximum_bytes: int | None = None,
+        *,
+        allow_http: bool = False,
+    ) -> tuple[str, int]:
+        del maximum_bytes
+        self.download_calls.append((url, allow_http))
+        destination.write_bytes(self.payload)
+        if progress is not None:
+            progress(len(self.payload), len(self.payload))
+        return url, len(self.payload)
+
+
 class FakeNodeHttpClient(FakeHttpClient):
     def __init__(self, response: Any, texts: dict[str, str]):
         super().__init__(response)
@@ -849,6 +899,30 @@ def vscode_component(manifest_path: Path) -> ComponentDefinition:
     return ComponentDefinition(manifest_path, value)
 
 
+def html_links_component(
+    manifest_path: Path,
+    *,
+    index_url: str = "https://downloads.example/releases/",
+) -> ComponentDefinition:
+    component = vscode_component(manifest_path)
+    component.value["updatePolicy"] = "same-track"
+    provider = component.provider("microsoft")
+    provider["resolver"] = {
+        "type": "html-links",
+        "indexUrl": index_url,
+        "linkPattern": (
+            r"^Microsoft\.WindowsTerminal.*?_"
+            r"(?P<version>\d+(?:\.\d+){3})_x64\.zip$"
+        ),
+        "excludePatterns": [r".*Preview.*"],
+    }
+    provider["verification"] = {"type": "none"}
+    manifest_path.write_text(
+        json.dumps(component.value), encoding="utf-8"
+    )
+    return component
+
+
 def intellij_component() -> ComponentDefinition:
     manifest_path = (
         Path(__file__).resolve().parent
@@ -1016,6 +1090,78 @@ class ComponentInfoTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValidationError, "tokens"):
             Catalog._validate_html_directory_resolver(invalid_token, path)
+
+    def test_html_links_contract_accepts_declarative_web_crawling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "vscode.json"
+            component = html_links_component(path)
+            resolver = component.provider("microsoft")["resolver"]
+            resolver["followPattern"] = r"^v\d+(?:\.\d+){3}$"
+            resolver["maxDepth"] = 3
+
+            Catalog._validate_component(component.value, "vscode", path)
+
+            resolver["indexUrl"] = "http://intranet.example/releases/"
+            Catalog._validate_component(component.value, "vscode", path)
+
+    def test_html_links_contract_rejects_invalid_patterns_and_depth(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "vscode.json"
+            component = html_links_component(path)
+            original = component.provider("microsoft")["resolver"]
+
+            invalid_link_pattern = json.loads(json.dumps(original))
+            invalid_link_pattern["linkPattern"] = "["
+            component.provider("microsoft")["resolver"] = invalid_link_pattern
+            with self.assertRaisesRegex(ValidationError, "linkPattern"):
+                Catalog._validate_component(component.value, "vscode", path)
+
+            missing_version_group = json.loads(json.dumps(original))
+            missing_version_group["linkPattern"] = r"^tool-\d+\.zip$"
+            component.provider("microsoft")[
+                "resolver"
+            ] = missing_version_group
+            with self.assertRaisesRegex(ValidationError, "version"):
+                Catalog._validate_component(component.value, "vscode", path)
+
+            invalid_exclusions = json.loads(json.dumps(original))
+            invalid_exclusions["excludePatterns"] = "Preview"
+            component.provider("microsoft")["resolver"] = invalid_exclusions
+            with self.assertRaisesRegex(ValidationError, "excludePatterns"):
+                Catalog._validate_component(component.value, "vscode", path)
+
+            malformed_exclusion = json.loads(json.dumps(original))
+            malformed_exclusion["excludePatterns"] = ["["]
+            component.provider("microsoft")["resolver"] = malformed_exclusion
+            with self.assertRaisesRegex(ValidationError, "excludePatterns"):
+                Catalog._validate_component(component.value, "vscode", path)
+
+            invalid_follow_pattern = json.loads(json.dumps(original))
+            invalid_follow_pattern["followPattern"] = "["
+            component.provider("microsoft")[
+                "resolver"
+            ] = invalid_follow_pattern
+            with self.assertRaisesRegex(ValidationError, "followPattern"):
+                Catalog._validate_component(component.value, "vscode", path)
+
+            for invalid_depth in (0, 4, True, "2"):
+                with self.subTest(maxDepth=invalid_depth):
+                    invalid_max_depth = json.loads(json.dumps(original))
+                    invalid_max_depth["followPattern"] = r"^v\d+$"
+                    invalid_max_depth["maxDepth"] = invalid_depth
+                    component.provider("microsoft")[
+                        "resolver"
+                    ] = invalid_max_depth
+                    with self.assertRaisesRegex(ValidationError, "maxDepth"):
+                        Catalog._validate_component(
+                            component.value, "vscode", path
+                        )
+
+            invalid_url = json.loads(json.dumps(original))
+            invalid_url["indexUrl"] = "ftp://downloads.example/releases/"
+            component.provider("microsoft")["resolver"] = invalid_url
+            with self.assertRaisesRegex(ValidationError, "indexUrl"):
+                Catalog._validate_component(component.value, "vscode", path)
 
     def test_server_kind_and_appendable_environment_are_manifest_driven(
         self,
@@ -2290,6 +2436,324 @@ class ProxyTests(unittest.TestCase):
 
 
 class ResolverTests(unittest.TestCase):
+    def test_html_links_follows_github_fragment_and_excludes_preview(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            index_url = "https://github.example/microsoft/terminal/releases/"
+            fragment_url = (
+                "https://github.example/microsoft/terminal/releases/"
+                "expanded_assets/v1.24.11911.0"
+            )
+            component = html_links_component(
+                Path(temporary) / "vscode.json", index_url=index_url
+            )
+            selected_name = (
+                "Microsoft.WindowsTerminal_1.24.11911.0_x64.zip"
+            )
+            selected_href = (
+                "/microsoft/terminal/releases/download/v1.24.11911.0/"
+                f"{selected_name}"
+            )
+            client = FakeWebHttpClient(
+                {
+                    index_url: (
+                        '<include-fragment src="expanded_assets/'
+                        'v1.24.11911.0"></include-fragment>'
+                    ),
+                    fragment_url: (
+                        '<a href="/microsoft/terminal/releases/download/'
+                        'v1.25.1912.0/'
+                        'Microsoft.WindowsTerminalPreview_1.25.1912.0_x64.zip">'
+                        "Microsoft.WindowsTerminalPreview_1.25.1912.0_x64.zip"
+                        "</a>"
+                        '<a href="/microsoft/terminal/releases/download/'
+                        'v1.23.10353.0/'
+                        'Microsoft.WindowsTerminal_1.23.10353.0_x64.zip">'
+                        "old</a>"
+                        f'<a href="{selected_href}">\n'
+                        f'  <span class="text-bold">{selected_name}</span>\n'
+                        "</a>"
+                        f'<a href="{selected_href}">{selected_name}</a>'
+                        '<a href="/microsoft/terminal/releases/download/'
+                        'v1.24.11911.0/'
+                        'Microsoft.WindowsTerminal_1.24.11911.0_arm64.zip">'
+                        "arm64</a>"
+                    ),
+                }
+            )
+
+            artifact = resolve_component(
+                component, "microsoft", 1, client
+            )
+
+            self.assertEqual("1.24.11911.0", artifact.version)
+            self.assertEqual(selected_name, artifact.file_name)
+            self.assertEqual(
+                "https://github.example" + selected_href,
+                artifact.url,
+            )
+            self.assertEqual(index_url, artifact.metadata_url)
+            self.assertIsNone(artifact.sha256)
+            self.assertIsNone(artifact.sha512)
+            self.assertIsNone(artifact.size)
+            self.assertEqual("unavailable", artifact.checksum_origin)
+            self.assertTrue(artifact.allow_http)
+            serialized = artifact.as_json()
+            self.assertEqual("unavailable", serialized["checksumOrigin"])
+            json.dumps(serialized)
+            self.assertEqual(
+                [(index_url, True), (fragment_url, True)],
+                client.text_calls,
+            )
+
+    def test_html_links_matches_normalized_text_and_absolute_url_basename(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = html_links_component(
+                Path(temporary) / "vscode.json"
+            )
+            resolver = component.provider("microsoft")["resolver"]
+            resolver["linkPattern"] = (
+                r"^Tool_(?P<version>\d+\.\d+\.\d+)_x64\.zip$"
+            )
+            resolver.pop("excludePatterns")
+            index_url = str(resolver["indexUrl"])
+
+            cases = (
+                (
+                    (
+                        '<a href="artifacts/download.zip">\n'
+                        "  <span>Tool_1.2.3_x64.zip</span>\n"
+                        "</a>"
+                    ),
+                    "1.2.3",
+                    "https://downloads.example/releases/artifacts/download.zip",
+                    "download.zip",
+                ),
+                (
+                    '<a href="https://cdn.example/files/'
+                    'Tool_1.2.4_x64.zip">Download</a>',
+                    "1.2.4",
+                    "https://cdn.example/files/Tool_1.2.4_x64.zip",
+                    "Tool_1.2.4_x64.zip",
+                ),
+            )
+            for html, version, expected_url, file_name in cases:
+                with self.subTest(version=version):
+                    artifact = resolve_component(
+                        component,
+                        "microsoft",
+                        1,
+                        FakeWebHttpClient({index_url: html}),
+                    )
+                    self.assertEqual(version, artifact.version)
+                    self.assertEqual(expected_url, artifact.url)
+                    self.assertEqual(file_name, artifact.file_name)
+
+    def test_html_links_ignores_failed_optional_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            index_url = "https://forge.example/releases/"
+            failed_fragment = "https://forge.example/releases/metadata"
+            asset_fragment = "https://forge.example/releases/assets"
+            component = html_links_component(
+                Path(temporary) / "vscode.json", index_url=index_url
+            )
+            client = FakeWebHttpClient(
+                {
+                    index_url: (
+                        '<include-fragment src="metadata"></include-fragment>'
+                        '<include-fragment src="assets"></include-fragment>'
+                    ),
+                    failed_fragment: NetworkError("optional fragment failed"),
+                    asset_fragment: (
+                        '<a href="Microsoft.WindowsTerminal_1.24.11911.0_x64.zip">'
+                        "download</a>"
+                    ),
+                }
+            )
+
+            artifact = resolve_component(
+                component, "microsoft", 1, client
+            )
+
+            self.assertEqual("1.24.11911.0", artifact.version)
+            self.assertEqual(
+                [
+                    (index_url, True),
+                    (failed_fragment, True),
+                    (asset_fragment, True),
+                ],
+                client.text_calls,
+            )
+
+    def test_html_links_selects_highest_semantic_version_within_track(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            component = html_links_component(
+                Path(temporary) / "vscode.json"
+            )
+            component.value["tracks"] = [
+                {"id": "1.24", "displayName": "Terminal 1.24"}
+            ]
+            component.value["defaultTrack"] = "1.24"
+            resolver = component.provider("microsoft")["resolver"]
+            resolver["linkPattern"] = (
+                r"^terminal-(?P<version>\d+\.\d+\.\d+)\.zip$"
+            )
+            resolver.pop("excludePatterns")
+            index_url = str(resolver["indexUrl"])
+            client = FakeWebHttpClient(
+                {
+                    index_url: (
+                        '<a href="terminal-1.25.1.zip">other track</a>'
+                        '<a href="terminal-1.24.11911.zip">latest</a>'
+                        '<a href="terminal-1.24.9999.zip">older</a>'
+                        '<a href="terminal-1.23.99999.zip">old track</a>'
+                    )
+                }
+            )
+
+            artifact = resolve_component(
+                component, "microsoft", "1.24", client
+            )
+
+            self.assertEqual("1.24.11911", artifact.version)
+            self.assertEqual(
+                "https://downloads.example/releases/"
+                "terminal-1.24.11911.zip",
+                artifact.url,
+            )
+
+    def test_html_links_follows_detail_page_and_nested_fragment_at_default_depth(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            index_url = "https://forge.example/tool/releases/"
+            detail_url = "https://forge.example/tool/releases/v1.8.2"
+            fragment_url = (
+                "https://forge.example/tool/releases/assets/v1.8.2"
+            )
+            component = html_links_component(
+                Path(temporary) / "vscode.json", index_url=index_url
+            )
+            resolver = component.provider("microsoft")["resolver"]
+            resolver["linkPattern"] = (
+                r"^tool-(?P<version>\d+\.\d+\.\d+)-x64\.zip$"
+            )
+            resolver["followPattern"] = r"/v\d+\.\d+\.\d+$"
+            resolver.pop("excludePatterns")
+            client = FakeWebHttpClient(
+                {
+                    index_url: (
+                        '<a href="v1.8.2">v1.8.2</a>'
+                        '<a href="ignored">not a release</a>'
+                    ),
+                    detail_url: (
+                        '<include-fragment src="assets/v1.8.2">'
+                        "</include-fragment>"
+                    ),
+                    fragment_url: (
+                        '<a href="downloads/tool-1.8.2-x64.zip">'
+                        "download</a>"
+                    ),
+                }
+            )
+
+            artifact = resolve_component(
+                component, "microsoft", 1, client
+            )
+
+            self.assertEqual("1.8.2", artifact.version)
+            self.assertEqual(
+                "https://forge.example/tool/releases/assets/"
+                "downloads/tool-1.8.2-x64.zip",
+                artifact.url,
+            )
+            self.assertEqual(
+                [
+                    (index_url, True),
+                    (detail_url, True),
+                    (fragment_url, True),
+                ],
+                client.text_calls,
+            )
+
+    def test_html_links_honors_configured_follow_depth(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            index_url = "https://forge.example/releases/"
+            first_url = "https://forge.example/releases/details-1"
+            second_url = "https://forge.example/releases/details-2"
+            component = html_links_component(
+                Path(temporary) / "vscode.json", index_url=index_url
+            )
+            resolver = component.provider("microsoft")["resolver"]
+            resolver["linkPattern"] = (
+                r"^tool-(?P<version>\d+\.\d+\.\d+)\.zip$"
+            )
+            resolver["followPattern"] = r"/details-\d+$"
+            resolver["maxDepth"] = 2
+            resolver.pop("excludePatterns")
+            responses = {
+                index_url: '<a href="details-1">details-1</a>',
+                first_url: '<a href="details-2">details-2</a>',
+                second_url: '<a href="tool-1.7.3.zip">download</a>',
+            }
+
+            artifact = resolve_component(
+                component,
+                "microsoft",
+                1,
+                FakeWebHttpClient(responses),
+            )
+            self.assertEqual("1.7.3", artifact.version)
+
+            resolver["maxDepth"] = 1
+            with self.assertRaisesRegex(NetworkError, "ZIP|enlace|versión"):
+                resolve_component(
+                    component,
+                    "microsoft",
+                    1,
+                    FakeWebHttpClient(responses),
+                )
+
+    def test_html_links_allows_http_and_keeps_first_latest_mirror(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            index_url = "http://intranet.example/releases/"
+            component = html_links_component(
+                Path(temporary) / "vscode.json", index_url=index_url
+            )
+            resolver = component.provider("microsoft")["resolver"]
+            resolver["linkPattern"] = (
+                r"^tool-(?P<version>\d+\.\d+\.\d+)\.zip$"
+            )
+            resolver.pop("excludePatterns")
+            first_url = "http://mirror-a.example/tool-1.6.0.zip"
+            second_url = "http://mirror-b.example/tool-1.6.0.zip"
+            client = FakeWebHttpClient(
+                {
+                    index_url: (
+                        f'<a href="{first_url}">first</a>'
+                        f'<a href="{first_url}">duplicate</a>'
+                        f'<a href="{second_url}">second</a>'
+                        '<a href="tool-1.5.9.zip">older</a>'
+                    )
+                }
+            )
+
+            artifact = resolve_component(
+                component, "microsoft", 1, client
+            )
+
+            self.assertEqual("1.6.0", artifact.version)
+            self.assertEqual(first_url, artifact.url)
+            self.assertTrue(artifact.allow_http)
+            self.assertEqual([(index_url, True)], client.text_calls)
+
     def test_resolves_bruno_portable_zip_from_stable_github_release(
         self,
     ) -> None:
@@ -2929,6 +3393,72 @@ class ExtractionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_installer_records_local_sha256_when_source_has_no_checksum(
+        self,
+    ) -> None:
+        component = html_links_component(self.root / "vscode.json")
+        source_archive = self.root / "vscode-source.zip"
+        with zipfile.ZipFile(
+            source_archive, "w", compression=zipfile.ZIP_DEFLATED
+        ) as output:
+            output.writestr("Code.exe", "portable executable")
+            output.writestr("bin/code.cmd", "@echo off\n")
+            output.writestr(
+                "Code.VisualElementsManifest.xml", "<Application/>"
+            )
+        expected_sha256 = sha256_file(source_archive)
+        client = FakeDownloadHttpClient(source_archive.read_bytes())
+        self.installer.client = client
+        artifact = ResolvedArtifact(
+            family="vscode",
+            component_id="vscode-microsoft",
+            provider="microsoft",
+            provider_name="Microsoft",
+            track=1,
+            version="1.24.11911.0",
+            url=(
+                "http://intranet.example/"
+                "Microsoft.WindowsTerminal_1.24.11911.0_x64.zip"
+            ),
+            file_name=(
+                "Microsoft.WindowsTerminal_1.24.11911.0_x64.zip"
+            ),
+            sha256=None,
+            sha512=None,
+            size=len(client.payload),
+            metadata_url="http://intranet.example/releases/",
+            checksum_origin="unavailable",
+            allow_http=True,
+        )
+
+        with patch.object(self.installer, "_check_disk_space"):
+            install_path, installed_artifact = self.installer.install(
+                component, artifact, process_environment={}
+            )
+
+        self.assertEqual(expected_sha256, installed_artifact.sha256)
+        self.assertEqual("downloaded", installed_artifact.checksum_origin)
+        self.assertTrue(installed_artifact.allow_http)
+        self.assertEqual(
+            [(artifact.url, True)], client.download_calls
+        )
+        marker = load_json(install_path / ".eap-install.json")
+        self.assertEqual("sha256", marker["checksumAlgorithm"])
+        self.assertEqual(expected_sha256, marker["artifactChecksum"])
+        self.assertEqual(expected_sha256, marker["artifactSha256"])
+        self.assertEqual("downloaded", marker["checksumOrigin"])
+        self.assertEqual("downloaded", marker["source"]["checksumOrigin"])
+        self.assertTrue(marker["source"]["allowHttp"])
+
+        with patch.object(self.installer, "_check_disk_space"):
+            reused_path, reused_artifact = self.installer.install(
+                component, artifact, process_environment={}
+            )
+        self.assertEqual(install_path, reused_path)
+        self.assertEqual(expected_sha256, reused_artifact.sha256)
+        self.assertEqual("downloaded", reused_artifact.checksum_origin)
+        self.assertEqual([(artifact.url, True)], client.download_calls)
 
     def test_bruno_validates_portable_archive_root(self) -> None:
         component = bruno_component()
@@ -4604,7 +5134,10 @@ class ComponentLifecycleTests(unittest.TestCase):
                 ),
                 patch("eap.application.ComponentInstaller") as installer,
             ):
-                installer.return_value.install.return_value = install_path
+                installer.return_value.install.return_value = (
+                    install_path,
+                    artifact,
+                )
                 app.install(
                     "default",
                     "maven",

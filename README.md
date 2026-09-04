@@ -141,7 +141,8 @@ portátiles y trabajar detrás de proxies o certificados corporativos.
 
 ## Diseñado para trabajar, no para hacer una demo
 
-- Descargas HTTPS y verificación SHA-256/SHA-512.
+- Descargas HTTPS por defecto; el resolver HTML genérico admite HTTP.
+- Verificación SHA-256/SHA-512 publicada o huella local cuando no existe.
 - Extracción segura e instalaciones transaccionales.
 - Versiones exactas por profile, sin saltos mayores inesperados.
 - Windows Terminal portable y runtime CPython privado.

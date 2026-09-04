@@ -535,7 +535,7 @@ class EapApplication:
             self.catalog,
             allow_missing=allow_missing,
         )
-        install_path = installer.install(
+        install_path, resolved = installer.install(
             component,
             resolved,
             process_environment=process_environment,
@@ -772,9 +772,20 @@ class EapApplication:
             )
         algorithm = str(artifact.get("checksumAlgorithm", ""))
         checksum = str(artifact.get("checksum", ""))
+        checksum_origin = str(
+            artifact.get("checksumOrigin", "published")
+        )
+        allow_http = artifact.get("allowHttp", False)
         if algorithm not in {"sha256", "sha512"} or not checksum:
             raise ValidationError(
                 f"El lock de {component.id} no contiene un checksum válido"
+            )
+        if (
+            checksum_origin not in {"published", "downloaded"}
+            or not isinstance(allow_http, bool)
+        ):
+            raise ValidationError(
+                f"El lock de {component.id} contiene un origen no válido"
             )
         return ResolvedArtifact(
             family=component.id,
@@ -794,6 +805,8 @@ class EapApplication:
                 else None
             ),
             metadata_url=str(item.get("metadataUrl", artifact["url"])),
+            checksum_origin=checksum_origin,
+            allow_http=allow_http,
         )
 
     def inventory(self, environment_id: str) -> list[dict[str, Any]]:
@@ -1027,6 +1040,8 @@ class EapApplication:
         file_name = source.get("fileName")
         metadata_url = source.get("metadataUrl", url)
         size = source.get("size")
+        checksum_origin = source.get("checksumOrigin", "published")
+        allow_http = source.get("allowHttp", False)
         if (
             not isinstance(url, str)
             or not url
@@ -1036,10 +1051,12 @@ class EapApplication:
             or not isinstance(metadata_url, str)
             or not metadata_url
             or (size is not None and (not isinstance(size, int) or size <= 0))
+            or checksum_origin not in {"published", "downloaded"}
+            or not isinstance(allow_http, bool)
         ):
             raise ValidationError("Origen de payload no válido")
-        HttpClient.require_https(url)
-        HttpClient.require_https(metadata_url)
+        HttpClient.require_web_url(url, allow_http=allow_http)
+        HttpClient.require_web_url(metadata_url, allow_http=allow_http)
         return ResolvedArtifact(
             family=component.id,
             component_id=str(provider["componentId"]),
@@ -1053,6 +1070,8 @@ class EapApplication:
             sha512=checksum if algorithm == "sha512" else None,
             size=size,
             metadata_url=metadata_url,
+            checksum_origin=str(checksum_origin),
+            allow_http=allow_http,
         )
 
     def _matching_locked_artifact(
@@ -1118,6 +1137,8 @@ class EapApplication:
                 "fileName": artifact.file_name,
                 "metadataUrl": artifact.metadata_url,
                 "size": artifact.size,
+                "checksumOrigin": artifact.checksum_origin,
+                "allowHttp": artifact.allow_http,
             }
             atomic_write_json(marker_path, marker)
         except (KeyError, OSError, ValidationError):

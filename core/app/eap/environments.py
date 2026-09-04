@@ -392,6 +392,10 @@ class EnvironmentStore:
             "checksumAlgorithm": artifact.checksum_algorithm,
             "checksum": artifact.checksum,
         }
+        if artifact.checksum_origin != "published":
+            artifact_data["checksumOrigin"] = artifact.checksum_origin
+        if artifact.allow_http:
+            artifact_data["allowHttp"] = True
         if artifact.sha256 is not None:
             artifact_data["sha256"] = artifact.sha256
         if artifact.sha512 is not None:

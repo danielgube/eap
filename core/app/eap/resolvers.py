@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import urllib.parse
+from collections import deque
 from dataclasses import asdict, dataclass
+from html.parser import HTMLParser
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -13,6 +15,8 @@ from .util import validate_version, version_belongs_to_track, version_key
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _SHA512 = re.compile(r"^[0-9a-fA-F]{128}$")
+_HTML_LINK_MAX_PAGES = 32
+_HTML_LINK_MAX_PAGE_BYTES = 5 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -29,28 +33,40 @@ class ResolvedArtifact:
     size: int | None
     metadata_url: str
     sha512: str | None = None
+    checksum_origin: str = "published"
+    allow_http: bool = False
 
     def as_json(self) -> dict[str, Any]:
         value = asdict(self)
+        checksum_origin = value.pop("checksum_origin")
+        allow_http = value.pop("allow_http")
         value["checksumAlgorithm"] = self.checksum_algorithm
         value["checksum"] = self.checksum
+        if checksum_origin != "published":
+            value["checksumOrigin"] = checksum_origin
+        if allow_http:
+            value["allowHttp"] = True
         return value
 
     @property
-    def checksum_algorithm(self) -> str:
+    def checksum_algorithm(self) -> str | None:
         if self.sha256 is not None:
             return "sha256"
         if self.sha512 is not None:
             return "sha512"
-        raise ValidationError("El artefacto resuelto no tiene checksum")
+        return None
 
     @property
-    def checksum(self) -> str:
+    def checksum(self) -> str | None:
         if self.sha256 is not None:
             return self.sha256
         if self.sha512 is not None:
             return self.sha512
-        raise ValidationError("El artefacto resuelto no tiene checksum")
+        return None
+
+    @property
+    def has_checksum(self) -> bool:
+        return self.checksum is not None
 
 
 def resolve_component(
@@ -67,6 +83,8 @@ def resolve_component(
         return _resolve_json_index(component, provider, track, client)
     if resolver_type == "html-directory":
         return _resolve_html_directory(component, provider, track, client)
+    if resolver_type == "html-links":
+        return _resolve_html_links(component, provider, track, client)
     if resolver_type == "adoptium-v3":
         return _resolve_adoptium(component, provider, track, client)
     if resolver_type == "corretto-index":
@@ -102,6 +120,228 @@ def resolve_component(
             component, provider, track, client
         )
     raise ValidationError(f"Resolver no soportado: {resolver_type!r}")
+
+
+class _HtmlLinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self.fragments: list[str] = []
+        self.base_href: str | None = None
+        self._active_href: str | None = None
+        self._active_text: list[str] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        attributes = {name.casefold(): value for name, value in attrs}
+        normalized_tag = tag.casefold()
+        if normalized_tag == "base" and self.base_href is None:
+            href = attributes.get("href")
+            if href:
+                self.base_href = href
+        elif normalized_tag == "include-fragment":
+            source = attributes.get("src")
+            if source:
+                self.fragments.append(source)
+        elif normalized_tag == "a":
+            self._finish_link()
+            href = attributes.get("href")
+            if href:
+                self._active_href = href
+                self._active_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() == "a":
+            self._finish_link()
+
+    def handle_data(self, data: str) -> None:
+        if self._active_href is not None:
+            self._active_text.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._finish_link()
+
+    def _finish_link(self) -> None:
+        if self._active_href is None:
+            return
+        text = " ".join("".join(self._active_text).split())
+        self.links.append((self._active_href, text))
+        self._active_href = None
+        self._active_text = []
+
+
+def _resolve_html_links(
+    component: ComponentDefinition,
+    provider: dict[str, Any],
+    track: int | str,
+    client: HttpClient,
+) -> ResolvedArtifact:
+    resolver = provider["resolver"]
+    metadata_url = _render_resolver_template(
+        str(resolver["indexUrl"]), track=track
+    )
+    flags = 0 if resolver.get("caseSensitive") is True else re.IGNORECASE
+    try:
+        link_pattern = re.compile(str(resolver["linkPattern"]), flags=flags)
+        exclude_patterns = [
+            re.compile(str(pattern), flags=flags)
+            for pattern in resolver.get("excludePatterns", [])
+        ]
+        follow_pattern = (
+            re.compile(str(resolver["followPattern"]), flags=flags)
+            if "followPattern" in resolver
+            else None
+        )
+    except re.error as exc:
+        raise ValidationError(
+            "El resolver html-links contiene una expresión regular no válida"
+        ) from exc
+
+    max_depth = int(resolver.get("maxDepth", 1))
+    pending: deque[tuple[str, int, bool]] = deque([(metadata_url, 0, True)])
+    visited: set[str] = set()
+    candidates: list[tuple[str, str, str]] = []
+    candidate_urls: set[str] = set()
+
+    while pending:
+        page_url, depth, required = pending.popleft()
+        page_url = urllib.parse.urldefrag(page_url).url
+        if page_url in visited:
+            continue
+        if len(visited) >= _HTML_LINK_MAX_PAGES:
+            raise NetworkError(
+                "El resolver html-links superó el límite de páginas enlazadas"
+            )
+        HttpClient.require_web_url(page_url, allow_http=True)
+        visited.add(page_url)
+        try:
+            document = client.get_text(
+                page_url,
+                maximum_bytes=_HTML_LINK_MAX_PAGE_BYTES,
+                allow_http=True,
+            )
+        except NetworkError:
+            if required:
+                raise
+            continue
+        parser = _HtmlLinkParser()
+        try:
+            parser.feed(document)
+            parser.close()
+        except (TypeError, ValueError) as exc:
+            raise NetworkError(
+                f"La página HTML no se pudo analizar: {page_url}"
+            ) from exc
+        base_url = (
+            urllib.parse.urljoin(page_url, parser.base_href)
+            if parser.base_href
+            else page_url
+        )
+
+        for fragment in parser.fragments:
+            fragment_url = urllib.parse.urljoin(base_url, fragment)
+            if _is_web_url(fragment_url):
+                pending.append((fragment_url, depth, False))
+
+        for href, text in parser.links:
+            url = urllib.parse.urljoin(base_url, href)
+            if not _is_web_url(url):
+                continue
+            url = urllib.parse.urldefrag(url).url
+            file_name = urllib.parse.unquote(
+                PurePosixPath(urllib.parse.urlparse(url).path).name
+            )
+            exclusion_text = "\n".join((text, file_name, url))
+            excluded = any(
+                pattern.search(exclusion_text) is not None
+                for pattern in exclude_patterns
+            )
+            if not excluded and url not in candidate_urls:
+                match = link_pattern.fullmatch(text)
+                matched_name = text
+                if match is None:
+                    match = link_pattern.fullmatch(file_name)
+                    matched_name = file_name
+                if match is not None:
+                    try:
+                        version = validate_version(str(match.group("version")))
+                    except (IndexError, ValidationError):
+                        version = ""
+                    selected_name = (
+                        file_name
+                        if file_name.casefold().endswith(".zip")
+                        else matched_name
+                    )
+                    if version and version_belongs_to_track(track, version):
+                        _validate_html_link_artifact(
+                            track, version, url, selected_name
+                        )
+                        candidates.append((version, url, selected_name))
+                        candidate_urls.add(url)
+            if (
+                follow_pattern is not None
+                and depth < max_depth
+                and follow_pattern.search(url) is not None
+            ):
+                pending.append((url, depth + 1, False))
+
+    if not candidates:
+        raise NetworkError(
+            f"Las páginas HTML no publicaron un ZIP para "
+            f"{component.display_name} en la línea {track}"
+        )
+    version, url, file_name = max(
+        candidates,
+        key=lambda item: component.comparable_version_key(item[0]),
+    )
+    return ResolvedArtifact(
+        family=component.id,
+        component_id=str(provider["componentId"]),
+        provider=str(provider["id"]),
+        provider_name=str(provider["displayName"]),
+        track=track,
+        version=version,
+        url=url,
+        file_name=file_name,
+        sha256=None,
+        sha512=None,
+        size=None,
+        metadata_url=metadata_url,
+        checksum_origin="unavailable",
+        allow_http=True,
+    )
+
+
+def _is_web_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme.casefold() in {"http", "https"} and bool(
+        parsed.hostname
+    )
+
+
+def _validate_html_link_artifact(
+    track: int | str,
+    version: str,
+    url: str,
+    file_name: str,
+) -> None:
+    validate_version(version)
+    if not version_belongs_to_track(track, version):
+        raise ValidationError(
+            f"La versión {version} no pertenece a la línea {track}"
+        )
+    HttpClient.require_web_url(url, allow_http=True)
+    if (
+        not file_name
+        or "/" in file_name
+        or "\\" in file_name
+        or not file_name.casefold().endswith(".zip")
+    ):
+        raise NetworkError(
+            f"El enlace HTML no proporcionó un nombre ZIP seguro: {file_name}"
+        )
 
 
 def _resolve_json_index(

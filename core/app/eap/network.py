@@ -27,9 +27,17 @@ class HttpClient:
 
     @staticmethod
     def require_https(url: str) -> None:
+        HttpClient.require_web_url(url)
+
+    @staticmethod
+    def require_web_url(url: str, allow_http: bool = False) -> None:
         parsed = urllib.parse.urlparse(url)
-        if parsed.scheme.lower() != "https":
-            raise ValidationError(f"EAP solo admite HTTPS para fuentes remotas: {url}")
+        allowed_schemes = {"https", "http"} if allow_http else {"https"}
+        if parsed.scheme.lower() not in allowed_schemes:
+            allowed_label = "HTTP o HTTPS" if allow_http else "HTTPS"
+            raise ValidationError(
+                f"EAP solo admite {allowed_label} para fuentes remotas: {url}"
+            )
         if not parsed.hostname:
             raise ValidationError(f"URL remota inválida: {url}")
 
@@ -58,8 +66,10 @@ class HttpClient:
         self,
         url: str,
         maximum_bytes: int = 5 * 1024 * 1024,
+        *,
+        allow_http: bool = False,
     ) -> str:
-        self.require_https(url)
+        self.require_web_url(url, allow_http=allow_http)
         request = urllib.request.Request(
             url,
             method="GET",
@@ -67,7 +77,7 @@ class HttpClient:
         )
         try:
             with self.opener.open(request, timeout=self.timeout_seconds) as response:
-                self.require_https(response.geturl())
+                self.require_web_url(response.geturl(), allow_http=allow_http)
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > maximum_bytes:
                     raise NetworkError(
@@ -89,8 +99,10 @@ class HttpClient:
         destination: Path,
         progress: ProgressCallback | None = None,
         maximum_bytes: int | None = None,
+        *,
+        allow_http: bool = False,
     ) -> tuple[str, int]:
-        self.require_https(url)
+        self.require_web_url(url, allow_http=allow_http)
         destination.parent.mkdir(parents=True, exist_ok=True)
         request = urllib.request.Request(
             url,
@@ -101,7 +113,7 @@ class HttpClient:
         try:
             with self.opener.open(request, timeout=self.timeout_seconds) as response:
                 final_url = response.geturl()
-                self.require_https(final_url)
+                self.require_web_url(final_url, allow_http=allow_http)
                 raw_total = response.headers.get("Content-Length")
                 total = int(raw_total) if raw_total and raw_total.isdigit() else None
                 if (
