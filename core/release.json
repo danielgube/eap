@@ -3,6 +3,7 @@
   "repository": "danielgube/eap",
   "assetName": "eap-{version}-windows-x64.zip",
   "managedPaths": [
+    "AGENTS.md",
     "README.md",
     "config.properties.example",
     "eap.cmd",
@@ -14,6 +15,7 @@
     "core/core_tools.json",
     "core/release.json",
     "core/tests",
-    "core/version.json"
+    "core/version.json",
+    "spec"
   ]
 }

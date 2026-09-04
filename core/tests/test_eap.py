@@ -3392,15 +3392,11 @@ class ExtractionTests(unittest.TestCase):
             Settings(dict(DEFAULTS)),
             HttpClient(1),
         )
-        seven_zip = self.paths.core / "tools" / "7zip" / "7z.exe"
-        seven_zip.parent.mkdir(parents=True)
-        shutil.copy2(
-            Path(__file__).resolve().parents[1]
-            / "tools"
-            / "7zip"
-            / "7z.exe",
-            seven_zip,
-        )
+        seven_zip_root = self.paths.core / "tools" / "7zip"
+        seven_zip_root.mkdir(parents=True)
+        seven_zip_source = Path(__file__).resolve().parents[1] / "tools" / "7zip"
+        for name in ("7z.exe", "7z.dll"):
+            shutil.copy2(seven_zip_source / name, seven_zip_root / name)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
